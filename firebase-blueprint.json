@@ -1,0 +1,236 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile containing authentication indicators, api keys for exchanges, and simulated balances.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "User's registered email address"
+        },
+        "recoveryPhrase": {
+          "type": "string",
+          "description": "Recovery phrase used to reset password"
+        },
+        "apiKeys": {
+          "type": "object",
+          "description": "Map of exchange API credentials stored securely by the user"
+        },
+        "balances": {
+          "type": "object",
+          "description": "Exchange and virtual portfolio balances"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the user account was created"
+        }
+      },
+      "required": ["email", "recoveryPhrase", "createdAt"]
+    },
+    "Bot": {
+      "title": "Trading Bot",
+      "description": "Configuration for Signal-based or DCA-based trading bots.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The ID of the user who owns this trading bot"
+        },
+        "name": {
+          "type": "string",
+          "description": "Custom name given to the bot"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["signal", "dca"],
+          "description": "Bot trading strategy type"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "paused"],
+          "description": "Running status of the bot"
+        },
+        "pair": {
+          "type": "string",
+          "description": "Trading pair, e.g., BTC/USDT"
+        },
+        "baseOrderSize": {
+          "type": "number",
+          "description": "Investment amount in USDT for the initiating base order"
+        },
+        "safetyOrderSize": {
+          "type": "number",
+          "description": "DCA only: Investment amount in USDT for scaling safety orders"
+        },
+        "priceDeviation": {
+          "type": "number",
+          "description": "DCA only: Percentage price drop to trigger a safety order"
+        },
+        "maxSafetyOrders": {
+          "type": "integer",
+          "description": "DCA only: Maximum number of active safety orders allowed"
+        },
+        "takeProfitPercent": {
+          "type": "number",
+          "description": "Percentage profit target index to trigger sell/take-profit"
+        },
+        "trailingTpPercent": {
+          "type": "number",
+          "description": "Trailing departure tolerance once take-profit is activated"
+        },
+        "stopLossPercent": {
+          "type": "number",
+          "description": "Stop loss percentage limit"
+        },
+        "trailingSlEnabled": {
+          "type": "boolean",
+          "description": "Whether Stop Loss trails behind ascending price"
+        },
+        "webhookSecret": {
+          "type": "string",
+          "description": "Token to authorize webhook signal executions"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when the bot was created"
+        }
+      },
+      "required": ["userId", "name", "type", "status", "pair", "baseOrderSize", "takeProfitPercent", "webhookSecret", "createdAt"]
+    },
+    "Position": {
+      "title": "Trading Position",
+      "description": "Active or closed trade executions managed by signal/DCA bots.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "The ID of the user who owns this position"
+        },
+        "botId": {
+          "type": "string",
+          "description": "The bot configuration controlling this position"
+        },
+        "pair": {
+          "type": "string",
+          "description": "Trading pair, e.g., BTC/USDT"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["long", "short"],
+          "description": "Trade direction indicator"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "closed"],
+          "description": "Status of the trade"
+        },
+        "entryPrice": {
+          "type": "number",
+          "description": "Average entry asset price"
+        },
+        "currentPrice": {
+          "type": "number",
+          "description": "Last tracked market price for evaluation"
+        },
+        "amount": {
+          "type": "number",
+          "description": "Quantity of asset held"
+        },
+        "totalInvested": {
+          "type": "number",
+          "description": "Cumulative portfolio size invested in USDT"
+        },
+        "safetyOrdersCount": {
+          "type": "integer",
+          "description": "DCA only: Number of times safety order scaled-in"
+        },
+        "maxPriceSeen": {
+          "type": "number",
+          "description": "Peak market price seen since profit target was breached"
+        },
+        "trailingTpActive": {
+          "type": "boolean",
+          "description": "True if target price was hit and bot is trailing profits upward"
+        },
+        "tpTriggerPrice": {
+          "type": "number",
+          "description": "Initial target price where profit tracking is enabled"
+        },
+        "slTriggerPrice": {
+          "type": "number",
+          "description": "Price floor where stop-loss executes"
+        },
+        "pnl": {
+          "type": "number",
+          "description": "Profit or loss accrued in USDT"
+        },
+        "pnlPercent": {
+          "type": "number",
+          "description": "Percentage gain or loss"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Trade creation timestamp"
+        },
+        "closedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Trade close timestamp"
+        }
+      },
+      "required": ["userId", "botId", "pair", "type", "status", "entryPrice", "currentPrice", "amount", "totalInvested", "createdAt"]
+    },
+    "Log": {
+      "title": "System Log",
+      "description": "Status triggers, order fills, webhook alerts, or errors logged by bots.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Belongs to user"
+        },
+        "botId": {
+          "type": "string",
+          "description": "Linked bot ID if any"
+        },
+        "message": {
+          "type": "string",
+          "description": "Description of the event"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["info", "trade", "dca_fill", "tp_fill", "sl_fill", "error"],
+          "description": "Severity / category marker for log grouping"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Time of log event"
+        }
+      },
+      "required": ["userId", "message", "type", "timestamp"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Primary user configuration profiles containing balance indicators, recovery codes, and exchange connection credentials."
+    },
+    "bots/{botId}": {
+      "schema": "Bot",
+      "description": "Registered trading bots configured for custom price intervals or exterior webhook triggers."
+    },
+    "positions/{positionId}": {
+      "schema": "Position",
+      "description": "Historical and open asset holdings associated with running bot systems."
+    },
+    "logs/{logId}": {
+      "schema": "Log",
+      "description": "Real-time bot execution event feed."
+    }
+  }
+}

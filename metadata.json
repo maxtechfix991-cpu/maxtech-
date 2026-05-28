@@ -1,0 +1,6 @@
+{
+  "name": "Crypto Trading Bot Terminal",
+  "description": "Multi-exchange automated trading signal and DCA terminal with trailing TP/SL boundaries and webhook API integrations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

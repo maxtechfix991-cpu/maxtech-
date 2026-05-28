@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net: Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // global utilities
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // --- Users Collection Rules ---
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && (
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['apiKeys', 'balances', 'recoveryPhrase'])
+      );
+      allow delete: if false;
+
+      function isValidUser(data) {
+        return data.keys().hasAll(['email', 'recoveryPhrase', 'createdAt'])
+            && data.email is string && data.email.size() <= 256
+            && data.recoveryPhrase is string && data.recoveryPhrase.size() <= 512
+            && (data.apiKeys == null || data.apiKeys is map)
+            && (data.balances == null || data.balances is map);
+      }
+    }
+
+    // --- Bots Collection Rules ---
+    match /bots/{botId} {
+      allow get, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid && isValidBot(request.resource.data);
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid && isValidBot(request.resource.data);
+
+      function isValidBot(data) {
+        return data.userId == request.auth.uid
+            && data.name is string && data.name.size() <= 128
+            && data.type is string && (data.type == 'signal' || data.type == 'dca')
+            && data.status is string && (data.status == 'active' || data.status == 'paused')
+            && data.pair is string && data.pair.size() <= 32
+            && data.baseOrderSize is number && data.baseOrderSize > 0
+            && data.takeProfitPercent is number && data.takeProfitPercent > 0
+            && data.webhookSecret is string && data.webhookSecret.size() <= 128;
+      }
+    }
+
+    // --- Positions Collection Rules ---
+    match /positions/{positionId} {
+      allow get, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid && isValidPosition(request.resource.data);
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid && isValidPosition(request.resource.data);
+
+      function isValidPosition(data) {
+        return data.userId == request.auth.uid
+            && data.botId is string && data.botId.size() <= 128
+            && data.pair is string && data.pair.size() <= 32
+            && data.type is string && (data.type == 'long' || data.type == 'short')
+            && data.status is string && (data.status == 'open' || data.status == 'closed')
+            && data.entryPrice is number
+            && data.currentPrice is number
+            && data.amount is number
+            && data.totalInvested is number;
+      }
+    }
+
+    // --- Logs Collection Rules ---
+    match /logs/{logId} {
+      allow get, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid && isValidLog(request.resource.data);
+      allow update: if false; // Logs are strictly historical and immutable
+
+      function isValidLog(data) {
+        return data.userId == request.auth.uid
+            && data.message is string && data.message.size() <= 1024
+            && data.type is string;
+      }
+    }
+  }
+}
