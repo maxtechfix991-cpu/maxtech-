@@ -135,6 +135,30 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     setTimeout(() => setNotif(null), 5000);
   };
 
+  // Customizable Webhook URL parameters for VPS deployment copying
+  const [webhookProtocol, setWebhookProtocol] = useState(() => {
+    return localStorage.getItem("apex_webhook_protocol") || window.location.protocol.replace(":", "");
+  });
+  const [webhookHost, setWebhookHost] = useState(() => {
+    return localStorage.getItem("apex_webhook_host") || window.location.hostname;
+  });
+  const [webhookPort, setWebhookPort] = useState(() => {
+    return localStorage.getItem("apex_webhook_port") || (window.location.port || "3000");
+  });
+
+  // Effect to sync customization with localStorage
+  useEffect(() => {
+    localStorage.setItem("apex_webhook_protocol", webhookProtocol);
+    localStorage.setItem("apex_webhook_host", webhookHost);
+    localStorage.setItem("apex_webhook_port", webhookPort);
+  }, [webhookProtocol, webhookHost, webhookPort]);
+
+  const computedWebhookUrl = useMemo(() => {
+    const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
+    const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
+    return `${protocolStr}${webhookHost}${portStr}/api/webhook/signal`;
+  }, [webhookProtocol, webhookHost, webhookPort]);
+
   // Unified global Webhook secret for all created bots
   const globalWebhookSecret = useMemo(() => {
     return `wh_usr_${currentUser.uid.replace(/[^\w]/g, "").substring(0, 8)}_${currentUser.recoveryPhrase}`;
@@ -1763,7 +1787,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {bots.map(bot => {
-                  const whUrl = `${window.location.origin}/api/webhook/signal`;
+                  const whUrl = computedWebhookUrl;
                   const activeAct = botPayloadActions[bot.id] || "buy";
                   
                   // All bots use the single unified global Webhook Secret
@@ -3105,12 +3129,12 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         <input
                           type="text"
                           readOnly
-                          value={`${window.location.origin}/api/webhook/signal`}
+                          value={computedWebhookUrl}
                           className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg py-2 px-3 text-xs font-mono text-emerald-400 select-all focus:outline-none"
                         />
                         <button
                           type="button"
-                          onClick={() => handleCopyText("wh_url_full", `${window.location.origin}/api/webhook/signal`)}
+                          onClick={() => handleCopyText("wh_url_full", computedWebhookUrl)}
                           className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1"
                         >
                           {copiedStates["wh_url_full"] ? (
@@ -3126,9 +3150,66 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           )}
                         </button>
                       </div>
-                      <p className="text-[10px] text-slate-505 font-sans mt-1">
+                      <p className="text-[10px] text-slate-505 font-sans mt-1 p-0.5">
                         Paste this exact address into the <strong className="text-slate-300">"Webhook URL"</strong> checkbox within the TradingView Alert configuration panel under the <strong className="text-slate-300 font-sans">Notifications</strong> tab.
                       </p>
+                    </div>
+
+                    {/* VPS Custom Domain & Port Configurator */}
+                    <div className="bg-[#181A20] rounded-lg p-4 border border-slate-800/80 space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <h4 className="text-[11px] font-mono text-white tracking-wider flex items-center gap-1.5 uppercase font-bold">
+                          <Globe className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                          VPS Port & IP Custom Override Tool
+                        </h4>
+                        <span className="text-[9px] font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded uppercase border border-amber-500/20">
+                          Active State
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-400 font-sans leading-relaxed">
+                        Deploying onto a VPS? Define your custom IP address (or domain name) and target listener port here. Your copied configurations will adjust to match.
+                      </p>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                        <div>
+                          <label className="text-[9px] font-mono text-slate-450 block mb-1 uppercase font-bold">PROTOCOL</label>
+                          <select
+                            value={webhookProtocol}
+                            onChange={(e) => setWebhookProtocol(e.target.value)}
+                            className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                          >
+                            <option value="http">http (Unsecured / Standard)</option>
+                            <option value="https">https (SSL Secured)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] font-mono text-slate-450 block mb-1 uppercase font-bold">HOST / DOMAIN / IP</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. 192.168.1.50"
+                            value={webhookHost}
+                            onChange={(e) => setWebhookHost(e.target.value)}
+                            className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="text-[9px] font-mono text-slate-450 block mb-1 uppercase font-bold">PORT OVERRIDE</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. 80, 3000, 8080"
+                            value={webhookPort}
+                            onChange={(e) => setWebhookPort(e.target.value)}
+                            className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 bg-[#0B0E11] rounded-lg p-2 border border-slate-800/60 font-mono text-[9px] text-slate-400">
+                        <span>GENERATED ENDPOINT PREVIEW:</span>
+                        <span className="text-amber-400 font-semibold select-all break-all">{computedWebhookUrl}</span>
+                      </div>
                     </div>
 
                     <div className="p-3 bg-blue-500/10 border border-blue-500/25 rounded-lg flex flex-col gap-1 text-[11px] font-sans leading-relaxed text-blue-300">
@@ -3149,6 +3230,19 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           {copiedStates["unified_wh_sec"] ? "COPIED" : "COPY SECRET"}
                         </button>
                       </div>
+                    </div>
+
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg flex flex-col gap-1 text-[11px] font-sans leading-relaxed text-amber-200">
+                      <div className="flex items-center gap-1.5 font-bold uppercase font-mono text-[10px] text-amber-400 font-sans">
+                        <Globe className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        VPS Port 80 Deployment Integration
+                      </div>
+                      <p>
+                        <strong>VPS Production Mode:</strong> When deploying this server unit on a virtual private server, it is configured to dynamically listen directly on <strong className="text-white">Port 80</strong> by default in production. This enables seamless, clean webhook integration URL pointers that require no custom suffix strings (e.g. <code>http://your_vps_ip/api/webhook/signal</code>).
+                      </p>
+                      <p className="text-[10px] text-amber-300/80">
+                        Make sure to allow port 80 traffic through your VPS firewall/security group, or override this port by setting the custom <code className="font-mono text-white text-[9px]">PORT</code> environment variable if necessary.
+                      </p>
                     </div>
 
                     <div className="bg-[#181A20] rounded-lg p-4 border border-slate-800/80 space-y-3">
@@ -3335,7 +3429,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       Click <strong className="text-white font-bold">"Set Alert"</strong>. Under the <strong className="text-emerald-400 font-bold">Notifications</strong> tab, turn on the Webhook URL checkbox, and paste:
                     </p>
                     <code className="block p-2 bg-[#0B0E11] rounded text-[10px] font-mono break-all border border-slate-800 text-slate-400">
-                      {window.location.origin}/api/webhook/signal
+                      {computedWebhookUrl}
                     </code>
                   </li>
 

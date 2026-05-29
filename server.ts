@@ -6,7 +6,7 @@ import { createServer as createViteServer } from "vite";
 const app = express();
 app.use(express.json());
 
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : (process.env.NODE_ENV === "production" ? 80 : 3000);
 
 // Hardcoded initial simulated asset prices & balances for realistic mock behavior
 const mockMarketPrices: Record<string, number> = {
