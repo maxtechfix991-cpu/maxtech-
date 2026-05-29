@@ -135,6 +135,11 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     setTimeout(() => setNotif(null), 5000);
   };
 
+  // Unified global Webhook secret for all created bots
+  const globalWebhookSecret = useMemo(() => {
+    return `wh_usr_${currentUser.uid.replace(/[^\w]/g, "").substring(0, 8)}_${currentUser.recoveryPhrase}`;
+  }, [currentUser]);
+
   // Clipboard copies handler
   const handleCopyText = (key: string, value: string) => {
     navigator.clipboard.writeText(value);
@@ -458,8 +463,6 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     }
 
     try {
-      const generatedWebhookSecret = "wh_" + Math.random().toString(36).substring(2, 12);
-      
       const newBot: Omit<TradingBot, "id"> = {
         userId: currentUser.uid,
         name: botName.trim(),
@@ -474,7 +477,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
         trailingTpPercent: botTrailingTpEnabled ? botTrailingProfit : 0,
         stopLossPercent: botStopLoss,
         trailingSlEnabled: botTrailingSL,
-        webhookSecret: generatedWebhookSecret,
+        webhookSecret: globalWebhookSecret,
         createdAt: new Date().toISOString(),
       };
 
@@ -661,7 +664,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     try {
       // Create Webhook POST query to Express Server Endpoint
       const hookPayload = {
-        secret: bot.webhookSecret,
+        secret: globalWebhookSecret,
         action: testerAction, // 'buy' (open bot trigger), 'sell' (take profit close / manual exit)
         pair: bot.pair,
         botId: bot.id,
@@ -1631,11 +1634,11 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       <input
                         id="target_tp_input"
                         type="number"
-                        step="0.1"
+                        step="any"
                         value={botTakeProfit}
-                        onChange={(e) => setBotTakeProfit(Math.max(0.2, parseFloat(e.target.value) || 0))}
+                        onChange={(e) => setBotTakeProfit(Math.max(0.0001, parseFloat(e.target.value) || 0))}
                         className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500"
-                        min={0.2}
+                        min={0.0001}
                         required
                       />
                       <span className="text-xs font-mono text-slate-500">%</span>
@@ -1662,11 +1665,11 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           <input
                             id="trailing_offset_input"
                             type="number"
-                            step="0.05"
+                            step="any"
                             value={botTrailingProfit}
-                            onChange={(e) => setBotTrailingProfit(Math.max(0.01, parseFloat(e.target.value) || 0))}
+                            onChange={(e) => setBotTrailingProfit(Math.max(0.0001, parseFloat(e.target.value) || 0))}
                             className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-1 px-2.5 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
-                            min={0.01}
+                            min={0.0001}
                           />
                           <span className="text-xs font-mono text-slate-500">%</span>
                         </div>
@@ -1686,7 +1689,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       <input
                         id="stop_loss_input"
                         type="number"
-                        step="0.1"
+                        step="any"
                         value={botStopLoss}
                         onChange={(e) => setBotStopLoss(Math.max(0, parseFloat(e.target.value) || 0))}
                         className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500"
@@ -1763,9 +1766,9 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                   const whUrl = `${window.location.origin}/api/webhook/signal`;
                   const activeAct = botPayloadActions[bot.id] || "buy";
                   
-                  // Generate correct customized signal payload for TradingView webhook copying
+                  // All bots use the single unified global Webhook Secret
                   const payloadJsonString = JSON.stringify({
-                    secret: bot.webhookSecret,
+                    secret: globalWebhookSecret,
                     action: activeAct,
                     pair: bot.pair,
                     botId: bot.id
@@ -1782,6 +1785,12 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                               {bot.type.toUpperCase()} AUTOMATION UNIT
                             </span>
                             <h3 className="text-base font-black text-white mt-1.5 tracking-wide block">{bot.name}</h3>
+                            {bot.status === "active" && (
+                              <div className="mt-2 text-[10px] font-mono font-bold text-[#38bdf8] bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded flex items-center gap-1 select-none animate-pulse w-fit">
+                                <Radio className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
+                                <span>TRADINGVIEW WEBHOOK ACTIVE</span>
+                              </div>
+                            )}
                           </div>
                           <span className={`inline-flex items-center gap-1.5 text-xs font-mono font-bold px-2 py-0.5 rounded ${bot.status === "active" ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-500/15 text-slate-450"}`}>
                             <span className={`h-1.5 w-1.5 rounded-full ${bot.status === "active" ? "bg-emerald-400" : "bg-slate-400"}`}></span>
@@ -2082,11 +2091,11 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           <label className="text-[10px] font-bold text-slate-350 block uppercase tracking-wider font-mono text-slate-500">Target Take Profit TP %</label>
                           <input
                             type="number"
-                            step="0.1"
+                            step="any"
                             value={editBotTakeProfit}
-                            onChange={(e) => setEditBotTakeProfit(Math.max(0.2, parseFloat(e.target.value) || 0))}
+                            onChange={(e) => setEditBotTakeProfit(Math.max(0.0001, parseFloat(e.target.value) || 0))}
                             className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none"
-                            min={0.2}
+                            min={0.0001}
                             required
                           />
                         </div>
@@ -2110,11 +2119,11 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                               <div className="flex items-center gap-1">
                                 <input
                                   type="number"
-                                  step="0.05"
+                                  step="any"
                                   value={editBotTrailingProfit}
-                                  onChange={(e) => setEditBotTrailingProfit(Math.max(0.01, parseFloat(e.target.value) || 0))}
+                                  onChange={(e) => setEditBotTrailingProfit(Math.max(0.0001, parseFloat(e.target.value) || 0))}
                                   className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-1 text-[11px] text-white focus:outline-none font-mono"
-                                  min={0.01}
+                                  min={0.0001}
                                 />
                                 <span className="text-[10px] font-mono text-slate-500">%</span>
                               </div>
@@ -2130,7 +2139,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           <label className="text-[10px] font-bold text-slate-350 block uppercase tracking-wider font-mono text-slate-555 text-slate-500">Protect Stop Loss Threshold %</label>
                           <input
                             type="number"
-                            step="0.1"
+                            step="any"
                             value={editBotStopLoss}
                             onChange={(e) => setEditBotStopLoss(Math.max(0, parseFloat(e.target.value) || 0))}
                             className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none"
@@ -2268,27 +2277,149 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                   <Wallet className="w-4.5 h-4.5 text-emerald-400" /> Verified Portfolios
                 </h3>
 
-                <div className="space-y-3.5">
+                <div className="space-y-4">
                   {["binance", "bybit", "okx", "coinbase", "weexio", "gate.io"].map(exchange => {
                     const isConfigured = !!currentUser.apiKeys?.[exchange];
-                    const assetBalances = balances[exchange] || {};
+                    const assetBalances = balances[exchange] || { USDT: 0, BTC: 0, ETH: 0, SOL: 0 };
+                    
+                    // Live conversion rates
+                    const btcPrice = marketPrices["BTC/USDT"] || 67500.0;
+                    const ethPrice = marketPrices["ETH/USDT"] || 3450.0;
+                    const solPrice = marketPrices["SOL/USDT"] || 145.0;
+
+                    const prices: Record<string, number> = {
+                      USDT: 1.0,
+                      BTC: btcPrice,
+                      ETH: ethPrice,
+                      SOL: solPrice
+                    };
+
+                    // Total USDT locked across all active positions
+                    const activeLockedUSDT = positions
+                      .filter(p => p.status === "open")
+                      .reduce((sum, p) => sum + p.totalInvested, 0);
+
+                    // Map actual wallet assets
+                    const assets = [
+                      {
+                        symbol: "USDT",
+                        name: "Tether (Collateral)",
+                        current: assetBalances.USDT ?? 0,
+                        remaining: Math.max(0, (assetBalances.USDT ?? 0) - activeLockedUSDT),
+                        value: (assetBalances.USDT ?? 0) * prices.USDT
+                      },
+                      {
+                        symbol: "BTC",
+                        name: "Bitcoin Core",
+                        current: assetBalances.BTC ?? 0,
+                        remaining: assetBalances.BTC ?? 0,
+                        value: (assetBalances.BTC ?? 0) * prices.BTC
+                      },
+                      {
+                        symbol: "ETH",
+                        name: "Ethereum Network",
+                        current: assetBalances.ETH ?? 0,
+                        remaining: assetBalances.ETH ?? 0,
+                        value: (assetBalances.ETH ?? 0) * prices.ETH
+                      },
+                      {
+                        symbol: "SOL",
+                        name: "Solana Liquid",
+                        current: assetBalances.SOL ?? 0,
+                        remaining: assetBalances.SOL ?? 0,
+                        value: (assetBalances.SOL ?? 0) * prices.SOL
+                      }
+                    ];
+
+                    const totalValuationUSDT = assets.reduce((sum, a) => sum + a.value, 0);
+
                     return (
-                      <div key={exchange} className="p-3 bg-[#0B0E11]/90 rounded-lg border border-slate-800/80 font-mono text-xs select-none">
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-white uppercase tracking-wide">{exchange}</span>
-                          <span className={`h-2.5 w-2.5 rounded-full ${isConfigured ? "bg-emerald-400 animate-pulse" : "bg-slate-750"}`} title={isConfigured ? "Keys verified" : "Keys unconfigured"}></span>
+                      <div key={exchange} className={`p-4 bg-[#0B0E11]/90 rounded-xl border font-sans select-none space-y-3 transition ${isConfigured ? "border-emerald-500/30 ring-1 ring-emerald-500/5 bg-slate-900/10 animate-pulse" : "border-slate-800/85 bg-slate-950/20"}`}>
+                        <div className="flex items-center justify-between pb-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-extrabold text-white uppercase text-xs tracking-wider font-mono">{exchange}</span>
+                            {isConfigured ? (
+                              <span className="bg-emerald-500/15 text-emerald-400 font-bold px-2 py-0.5 rounded text-[8px] tracking-wider font-mono border border-emerald-500/20">CONNECTED</span>
+                            ) : (
+                              <span className="bg-[#1e2329]/60 text-slate-400 font-semibold px-2 py-0.5 rounded text-[8px] tracking-wider font-mono border border-slate-700/50">DEMO ACTIVE</span>
+                            )}
+                          </div>
+                          <span className={`h-2 text-xs font-mono font-bold flex items-center gap-1.5 ${isConfigured ? "text-emerald-450" : "text-slate-500"}`}>
+                            <span className={`h-2 w-2 rounded-full ${isConfigured ? "bg-emerald-400 animate-pulse" : "bg-slate-700"}`}></span>
+                          </span>
                         </div>
-                        
-                        <div className="mt-2.5 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
-                          <div>USDT: <span className="text-white font-bold">${(assetBalances.USDT ?? 0).toLocaleString()}</span></div>
-                          <div>BTC: <span className="text-white font-bold">{(assetBalances.BTC ?? 0).toFixed(4)}</span></div>
-                          <div>ETH: <span className="text-white font-bold">{(assetBalances.ETH ?? 0).toFixed(3)}</span></div>
-                          <div>SOL: <span className="text-white font-bold">{(assetBalances.SOL ?? 0).toFixed(1)}</span></div>
+
+                        {/* Grand Total Net Worth Valuation Header */}
+                        <div className="bg-[#181A20]/80 p-3 rounded-lg border border-slate-800 flex items-center justify-between">
+                          <div>
+                            <span className="text-[9px] text-slate-500 font-mono font-bold uppercase tracking-wider block">TOTAL PORTFOLIO ASSETS</span>
+                            <span className="text-sm font-black text-white font-mono">${totalValuationUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-slate-500 text-[10px]">USDT</span></span>
+                          </div>
+                          {isConfigured && activeLockedUSDT > 0 && (
+                            <div className="text-right">
+                              <span className="text-[8px] text-orange-400 font-mono font-bold uppercase tracking-wider block">LOCK MARGIN</span>
+                              <span className="text-xs font-mono font-semibold text-orange-400">-${activeLockedUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Ledger Breakdown Grid */}
+                        <div className="space-y-2.5 pt-1.5">
+                          <div className="grid grid-cols-4 text-[9px] font-mono text-slate-500 uppercase font-bold tracking-wider select-none px-1 pb-1 border-b border-slate-800/40">
+                            <span>ASSET</span>
+                            <span className="text-right">CURRENT</span>
+                            <span className="text-right">REMAINING</span>
+                            <span className="text-right">TOTAL VAL</span>
+                          </div>
+
+                          <div className="space-y-2 font-mono text-[11px]">
+                            {assets.map(asset => {
+                              const sharePercent = totalValuationUSDT > 0 ? (asset.value / totalValuationUSDT) * 100 : 0;
+                              return (
+                                <div key={asset.symbol} className="space-y-1">
+                                  <div className="grid grid-cols-4 items-center">
+                                    {/* Asset symbol */}
+                                    <div>
+                                      <span className="font-extrabold text-white block leading-tight">{asset.symbol}</span>
+                                      <span className="text-[8px] text-slate-500 block leading-none truncate max-w-[50px] font-sans">{asset.name.split(" ")[0]}</span>
+                                    </div>
+                                    
+                                    {/* Current balance */}
+                                    <span className="text-right text-white font-semibold">
+                                      {asset.current.toLocaleString(undefined, { minimumFractionDigits: asset.symbol === "USDT" ? 2 : 4, maximumFractionDigits: asset.symbol === "USDT" ? 2 : 4 })}
+                                    </span>
+
+                                    {/* Remaining balance */}
+                                    <span className={`text-right font-bold ${asset.symbol === "USDT" && activeLockedUSDT > 0 ? "text-emerald-400 font-black animate-pulse" : "text-slate-300"}`}>
+                                      {asset.remaining.toLocaleString(undefined, { minimumFractionDigits: asset.symbol === "USDT" ? 2 : 4, maximumFractionDigits: asset.symbol === "USDT" ? 2 : 4 })}
+                                    </span>
+
+                                    {/* Valuation in USDT */}
+                                    <span className="text-right font-black text-white">
+                                      ${asset.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    </span>
+                                  </div>
+
+                                  {/* Small visual bar representing portfolio share percentage */}
+                                  <div className="w-full h-1 bg-slate-900 rounded-full overflow-hidden">
+                                    <div 
+                                      style={{ width: `${sharePercent}%` }} 
+                                      className={`h-full rounded-full ${
+                                        asset.symbol === "USDT" ? "bg-emerald-500" :
+                                        asset.symbol === "BTC" ? "bg-amber-500" :
+                                        asset.symbol === "ETH" ? "bg-blue-500" : "bg-purple-500"
+                                      }`}
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
 
                         {!isConfigured && (
-                          <div className="mt-3 text-[10px] text-slate-500 leading-normal border-t border-slate-800/50 pt-2 flex items-center gap-1 font-sans">
-                            <HelpCircle className="w-3.5 h-3.5" />
+                          <div className="mt-2 text-[10px] text-slate-500 leading-normal border-t border-slate-800/50 pt-2 flex items-center gap-1 font-sans select-none">
+                            <HelpCircle className="w-3.5 h-3.5 text-slate-500" />
                             Preloaded demo balances enabled. Register API keys to link live balances.
                           </div>
                         )}
@@ -3000,6 +3131,26 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       </p>
                     </div>
 
+                    <div className="p-3 bg-blue-500/10 border border-blue-500/25 rounded-lg flex flex-col gap-1 text-[11px] font-sans leading-relaxed text-blue-300">
+                      <div className="flex items-center gap-1.5 font-bold uppercase font-mono text-[10px] text-blue-400">
+                        <Radio className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                        Unified Webhook Setup (All bots share one webhook)
+                      </div>
+                      <p>
+                        <strong>Single URL & Key:</strong> You only need to configure <strong>one single alert webhook</strong> in your TradingView system! All of your automated trading bots share your secure universal secret indicator key:
+                      </p>
+                      <div className="bg-[#0B0E11] px-2.5 py-1.5 rounded font-mono text-xs text-white break-all mt-1 select-all flex items-center justify-between">
+                        <span>{globalWebhookSecret}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyText("unified_wh_sec", globalWebhookSecret)}
+                          className="text-blue-400 hover:text-blue-300 text-[9px] font-bold font-mono"
+                        >
+                          {copiedStates["unified_wh_sec"] ? "COPIED" : "COPY SECRET"}
+                        </button>
+                      </div>
+                    </div>
+
                     <div className="bg-[#181A20] rounded-lg p-4 border border-slate-800/80 space-y-3">
                       <h4 className="text-[11px] font-mono text-white tracking-wider flex items-center gap-1.5 uppercase">
                         <Shield className="w-3.5 h-3.5 text-blue-400" /> Webhook Alert Template Creator
@@ -3049,7 +3200,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         const activeBot = bots.find(b => b.id === testerBotId);
                         if (!activeBot) return null;
                         const templateJson = {
-                          secret: activeBot.webhookSecret,
+                          secret: globalWebhookSecret,
                           action: testerAction,
                           pair: activeBot.pair,
                           botId: activeBot.id,
@@ -3121,9 +3272,9 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         <label className="text-[9px] font-mono text-slate-455 block mb-1">WEBHOOK SECURITY TOKEN</label>
                         <input
                           type="text"
-                          value={bots.find(b => b.id === testerBotId)?.webhookSecret || ""}
+                          value={globalWebhookSecret}
                           readOnly
-                          className="w-full bg-[#0B0E11]/70 border border-slate-800/80 rounded-lg p-2.5 text-xs text-slate-500 font-mono select-all focus:outline-none"
+                          className="w-full bg-[#0B0E11]/70 border border-slate-800/80 rounded-lg p-2.5 text-xs text-blue-450 font-mono select-all focus:outline-none text-blue-400"
                         />
                       </div>
                     </div>
