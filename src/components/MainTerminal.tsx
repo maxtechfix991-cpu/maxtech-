@@ -1851,6 +1851,67 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             </span>
                             <span className="bg-emerald-500/10 text-emerald-400 font-bold px-1.5 py-0.2 rounded text-[8px] uppercase font-mono tracking-widest border border-emerald-500/20">POST</span>
                           </div>
+
+                          {/* Interactive VPS URL Customizer directly inside Linker Box */}
+                          <div className="bg-[#181A20] rounded-lg p-2 border border-slate-800 space-y-2">
+                            <div className="flex justify-between items-center text-[8px] font-bold text-slate-550 text-slate-500 tracking-wider uppercase font-mono">
+                              <span className="flex items-center gap-1"><Globe className="w-3 h-3 text-amber-500" /> VPS Custom Linker Configuration</span>
+                              <span className="text-amber-400">customizer</span>
+                            </div>
+                            
+                            <div className="grid grid-cols-2 gap-2 text-[9px] font-sans">
+                              <div>
+                                <label className="text-[8px] font-bold text-slate-400 block mb-0.5 uppercase font-mono">Port Override</label>
+                                <div className="flex gap-1.5">
+                                  <input
+                                    type="text"
+                                    value={webhookPort}
+                                    onChange={(e) => setWebhookPort(e.target.value)}
+                                    placeholder="80, 3000"
+                                    className="w-full bg-[#0B0E11] border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-white focus:outline-none focus:border-emerald-500 font-mono"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setWebhookPort("80");
+                                      setWebhookProtocol("http");
+                                    }}
+                                    className={`px-1.5 py-0.5 rounded text-[8px] font-mono font-bold transition border cursor-pointer shrink-0 ${
+                                      webhookPort === "80"
+                                        ? "bg-emerald-500/25 border-emerald-500/40 text-emerald-400"
+                                        : "bg-slate-900 border-slate-800 text-slate-400 hover:text-white"
+                                    }`}
+                                    title="Set Webhook Port to 80 (standard VPS HTTP)"
+                                  >
+                                    80
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setWebhookPort("3000")}
+                                    className={`px-1.5 py-0.5 rounded text-[8px] font-mono font-bold transition border cursor-pointer shrink-0 ${
+                                      webhookPort === "3000"
+                                        ? "bg-blue-500/25 border-blue-500/40 text-blue-400"
+                                        : "bg-slate-900 border-slate-800 text-slate-400 hover:text-white"
+                                    }`}
+                                    title="Set Webhook Port to 3000"
+                                  >
+                                    3k
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div>
+                                <label className="text-[8px] font-bold text-slate-400 block mb-0.5 uppercase font-mono">Host / VPS IP Address</label>
+                                <input
+                                  type="text"
+                                  value={webhookHost}
+                                  onChange={(e) => setWebhookHost(e.target.value)}
+                                  placeholder="e.g. 192.168.1.50"
+                                  className="w-full bg-[#0B0E11] border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-white focus:outline-none focus:border-emerald-500 font-mono"
+                                />
+                              </div>
+                            </div>
+                          </div>
                           
                           {/* Destination Webhook Copy group */}
                           <div className="space-y-1">
