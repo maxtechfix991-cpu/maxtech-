@@ -137,13 +137,13 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
   // Customizable Webhook URL parameters for VPS deployment copying
   const [webhookProtocol, setWebhookProtocol] = useState(() => {
-    return localStorage.getItem("apex_webhook_protocol") || window.location.protocol.replace(":", "");
+    return localStorage.getItem("apex_webhook_protocol") || "http";
   });
   const [webhookHost, setWebhookHost] = useState(() => {
-    return localStorage.getItem("apex_webhook_host") || window.location.hostname;
+    return localStorage.getItem("apex_webhook_host") || (window.location.hostname.includes("run.app") ? "your_vps_ip_here" : window.location.hostname);
   });
   const [webhookPort, setWebhookPort] = useState(() => {
-    return localStorage.getItem("apex_webhook_port") || (window.location.port || "3000");
+    return localStorage.getItem("apex_webhook_port") || "80";
   });
 
   // Effect to sync customization with localStorage
@@ -3203,6 +3203,33 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             onChange={(e) => setWebhookPort(e.target.value)}
                             className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
                           />
+                          <div className="flex gap-1 pt-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setWebhookPort("80");
+                                setWebhookProtocol("http");
+                              }}
+                              className={`flex-1 py-1 rounded text-[9px] font-mono font-bold transition border cursor-pointer ${
+                                webhookPort === "80"
+                                  ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-400"
+                                  : "bg-slate-900 border-slate-800 text-slate-400 hover:text-white"
+                              }`}
+                            >
+                              Port 80 (VPS Default)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setWebhookPort("3000")}
+                              className={`flex-1 py-1 rounded text-[9px] font-mono font-bold transition border cursor-pointer ${
+                                webhookPort === "3000"
+                                  ? "bg-blue-500/20 border-blue-500/30 text-blue-400"
+                                  : "bg-slate-900 border-slate-800 text-slate-400 hover:text-white"
+                              }`}
+                            >
+                              Port 3000
+                            </button>
+                          </div>
                         </div>
                       </div>
 
