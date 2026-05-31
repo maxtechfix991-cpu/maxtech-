@@ -25,6 +25,12 @@ export interface TradingBot {
   stopLossPercent?: number; // fallback stop loss percentage
   trailingSlEnabled?: boolean; // dynamic trailing stop loss
   webhookSecret: string; // secret authentication token for TV alerts
+  webhookUrl?: string; // unique webhook endpoint url
+  leverage?: number; // risk management leverage multiplier (e.g. 10x)
+  maxPositionSize?: number; // max budget/position size (USDT)
+  paperTrading?: boolean; // paper trading simulation toggle
+  capitalProtection?: number; // equity threshold preservation limit (%)
+  exchange?: string; // target execution market exchange (e.g. binance, bybit)
   createdAt: string;
 }
 
@@ -48,6 +54,8 @@ export interface Position {
   slTriggerPrice: number; // stop-loss threshold price
   pnl: number; // USDT profit size
   pnlPercent: number; // relative ROI
+  paperTrading?: boolean; // toggle for sandbox separation
+  exchange?: string; // target market exchange
   createdAt: string;
   closedAt?: string;
   closeReason?: "tp" | "sl" | "trailing_tp" | "manual" | "webhook";

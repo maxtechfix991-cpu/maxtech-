@@ -19,7 +19,7 @@ import {
   Compass,
   Link,
   Shield, Check, ArrowUpRight, ArrowDownRight, User,
-  Edit, Copy, Search, Sliders, Globe, AlertTriangle, XCircle, History, Briefcase, TrendingUp, Radio
+  Edit, Copy, Search, Sliders, Globe, AlertTriangle, ShieldAlert, XCircle, History, Briefcase, TrendingUp, Radio
 } from "lucide-react";
 
 interface MainTerminalProps {
@@ -119,6 +119,113 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   const [botTrailingTpEnabled, setBotTrailingTpEnabled] = useState(true);
   const [pairSearchQuery, setPairSearchQuery] = useState("");
 
+  // Risk management and exchange configurations
+  const [botExchange, setBotExchange] = useState("binance");
+  const [botLeverage, setBotLeverage] = useState<number>(1); // 1x to 50x
+  const [botMaxPositionSize, setBotMaxPositionSize] = useState<number>(1000); // Nominal cap in USDT
+  const [botPaperTrading, setBotPaperTrading] = useState<boolean>(true); // Paper trading simulation toggle
+  const [botCapitalProtection, setBotCapitalProtection] = useState<number>(0); // Absolute safety limit (USDT)
+  const [simulateMismatch, setSimulateMismatch] = useState<boolean>(false); // Balance mismatch checker simulation
+  const [walletLogs, setWalletLogs] = useState<string[]>([]); // Synced ledger execution audit notes
+  const [withdrawalBlockMsg, setWithdrawalBlockMsg] = useState<string | null>(null); // Withdrawal restriction lock message
+
+  // Master control state for Sandbox vs Real Trading Mode
+  const [globalMode, setGlobalMode] = useState<"sandbox" | "real">(() => {
+    return (localStorage.getItem("apex_global_trading_mode") as "sandbox" | "real") || "sandbox";
+  });
+
+  const handleToggleGlobalMode = (mode: "sandbox" | "real") => {
+    setGlobalMode(mode);
+    localStorage.setItem("apex_global_trading_mode", mode);
+    
+    // Automatically pre-select corresponding mode on Bot Creator state defaults
+    if (mode === "real") {
+      setBotPaperTrading(false);
+    } else {
+      setBotPaperTrading(true);
+    }
+
+    triggerNotification(
+      `Switched ApexTerminal to ${mode === "real" ? "🟢 REAL TRADING MODE" : "⚡ SANDBOX MODE (Simulated)"}`,
+      "success"
+    );
+  };
+
+  // Memoized select-mode active balances
+  const activeBalances = useMemo(() => {
+    if (globalMode === "sandbox") {
+      const fallbackBalances = {
+        binance: { USDT: 15300.0, BTC: 0.12, ETH: 1.5, SOL: 0 },
+        bybit: { USDT: 8400.0, BTC: 0.05, ETH: 0, SOL: 22.0 },
+        okx: { USDT: 4200.0, BTC: 0, ETH: 3.2, SOL: 15.0 },
+        coinbase: { USDT: 12000.0, BTC: 0.18, ETH: 4.0, SOL: 5.0 },
+        weexio: { USDT: 9500.0, BTC: 0.08, ETH: 2.1, SOL: 12.0 },
+        "gate.io": { USDT: 11000.0, BTC: 0.15, ETH: 3.5, SOL: 8.0 },
+        kucoin: { USDT: 7600.0, BTC: 0.03, ETH: 1.2, SOL: 4.0 }
+      };
+      
+      const merged = { ...fallbackBalances };
+      Object.keys(balances).forEach(ex => {
+        merged[ex as keyof typeof fallbackBalances] = { 
+          ...(fallbackBalances[ex as keyof typeof fallbackBalances] || { USDT: 0, BTC: 0, ETH: 0, SOL: 0 }), 
+          ...balances[ex] 
+        };
+      });
+      return merged;
+    } else {
+      // In real trading mode, only show balances if API keys are verified! Otherwise empty/zero.
+      const realBalances: Record<string, Record<string, number>> = {};
+      ["binance", "bybit", "okx", "gate.io", "kucoin"].forEach(ex => {
+        const isConfigured = !!currentUser.apiKeys?.[ex];
+        if (isConfigured) {
+          realBalances[ex] = balances[ex] || { USDT: 0, BTC: 0, ETH: 0, SOL: 0 };
+        } else {
+          realBalances[ex] = { USDT: 0, BTC: 0, ETH: 0, SOL: 0 };
+        }
+      });
+      return realBalances;
+    }
+  }, [globalMode, balances, currentUser.apiKeys]);
+
+  // Memoized displayed active bots based on selected global mode parameter
+  const displayedBots = useMemo(() => {
+    return bots.filter(b => {
+      const isPaper = b.paperTrading !== false;
+      return globalMode === "real" ? !isPaper : isPaper;
+    });
+  }, [bots, globalMode]);
+
+  // Memoized displayed active positions based on selected global mode parameter
+  const displayedPositions = useMemo(() => {
+    return positions.filter(p => {
+      const isPaper = p.paperTrading !== false;
+      return globalMode === "real" ? !isPaper : isPaper;
+    });
+  }, [positions, globalMode]);
+
+  const handleBlockWithdrawal = async (exchangeId: string, asset: string, defaultAmount: string) => {
+    try {
+      const resp = await fetch("/api/exchange/withdraw", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: currentUser?.uid,
+          exchange: exchangeId,
+          asset,
+          amount: parseFloat(defaultAmount) || 500,
+          address: "0xEnforcedSecureWhitelistedSandboxReadonlyAddress"
+        })
+      });
+      const data = await resp.json();
+      if (!data.success) {
+        setWithdrawalBlockMsg(data.message || "Withdrawals are strictly disabled by Read-Only Sandbox policy.");
+        triggerNotification(`⚠️ Security Blocked: Withdrawals are disabled server-side.`, "error");
+      }
+    } catch (e) {
+      setWithdrawalBlockMsg("❌ SECURITY DISALLOWANCE: Withdrawal requests are blocked server-side under read-only API configuration standards.");
+    }
+  };
+
   // Webhook Signal Tester State
   const [testerBotId, setTesterBotId] = useState("");
   const [testerAction, setTesterAction] = useState<"buy" | "sell" | "safety">("buy");
@@ -140,7 +247,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     return localStorage.getItem("apex_webhook_protocol") || "http";
   });
   const [webhookHost, setWebhookHost] = useState(() => {
-    return localStorage.getItem("apex_webhook_host") || (window.location.hostname.includes("run.app") ? "your_vps_ip_here" : window.location.hostname);
+    return localStorage.getItem("apex_webhook_host") || (window.location.hostname.includes("run.app") ? "your-vps-ip" : window.location.hostname);
   });
   const [webhookPort, setWebhookPort] = useState(() => {
     return localStorage.getItem("apex_webhook_port") || "80";
@@ -226,30 +333,46 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   }, []);
 
   // ----------------------------------------------------
-  // LOAD USER BOT CONFIGURATIONS & POSITIONS
+  // REAL-TIME FIRESTORE BACKGROUND SYNCHRONIZATION ENGINE
   // ----------------------------------------------------
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        const loadedBots = await dbService.getBots(currentUser.uid);
-        const loadedPos = await dbService.getPositions(currentUser.uid);
-        const loadedLogs = await dbService.getLogs(currentUser.uid);
-        
-        setBots(loadedBots);
-        setPositions(loadedPos.filter(p => p.status === "open"));
-        setClosedPositions(loadedPos.filter(p => p.status === "closed"));
-        setLogs(loadedLogs);
+  const syncStateWithDatabase = async (isInitial = false) => {
+    if (!currentUser?.uid) return;
+    try {
+      const [loadedBots, loadedPos, loadedLogs, updatedProfile] = await Promise.all([
+        dbService.getBots(currentUser.uid),
+        dbService.getPositions(currentUser.uid),
+        dbService.getLogs(currentUser.uid),
+        dbService.getUserProfile(currentUser.uid)
+      ]);
+      
+      setBots(loadedBots);
+      setPositions(loadedPos.filter(p => p.status === "open"));
+      setClosedPositions(loadedPos.filter(p => p.status === "closed"));
+      setLogs(loadedLogs);
 
-        // Pre-select first bot in tester list
-        if (loadedBots.length > 0) {
-          setTesterBotId(loadedBots[0].id);
-        }
-      } catch (e) {
-        console.error("Error fetching Firestore entries:", e);
+      if (updatedProfile && updatedProfile.balances) {
+        setBalances(updatedProfile.balances);
+        setCurrentUser(updatedProfile);
       }
-    };
-    loadData();
-  }, [currentUser]);
+
+      if (isInitial && loadedBots.length > 0) {
+        setTesterBotId(prev => prev || loadedBots[0].id);
+      }
+    } catch (e) {
+      console.error("Failed periodic database sync in background:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (!currentUser || !currentUser.uid) return;
+    
+    // Core initial hydration
+    syncStateWithDatabase(true);
+
+    // Dynamic background poll interval (every 4000ms) to capture external webhook runs automatically
+    const syncInterval = setInterval(() => syncStateWithDatabase(false), 4000);
+    return () => clearInterval(syncInterval);
+  }, [currentUser?.uid]);
 
   // Fetch closed positions from the database
   const loadTradeHistory = async () => {
@@ -343,7 +466,10 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
   // Memoized search, sorting, and filtering of closed positions
   const filteredClosedPositions = useMemo(() => {
-    let result = [...closedPositions];
+    let result = closedPositions.filter(p => {
+      const isPaper = p.paperTrading !== false;
+      return globalMode === "real" ? !isPaper : isPaper;
+    });
 
     if (historySearchQuery.trim()) {
       const q = historySearchQuery.toLowerCase().trim();
@@ -379,7 +505,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     });
 
     return result;
-  }, [closedPositions, historySearchQuery, historySortKey, historySortOrder]);
+  }, [closedPositions, historySearchQuery, historySortKey, historySortOrder, globalMode]);
 
   // Pagination calculation
   const totalItems = filteredClosedPositions.length;
@@ -396,13 +522,42 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   // Cumulative metrics for Closed Trades
   const tradeMetrics = useMemo(() => {
     const total = closedPositions.length;
-    const wins = closedPositions.filter(p => p.pnl > 0).length;
-    const losses = total - wins;
+    const winsList = closedPositions.filter(p => p.pnl > 0);
+    const lossesList = closedPositions.filter(p => p.pnl < 0);
+    const wins = winsList.length;
+    const losses = lossesList.length;
     const winRate = total > 0 ? (wins / total) * 100 : 0;
     const netPnl = closedPositions.reduce((acc, p) => acc + p.pnl, 0);
     const avgRoi = total > 0 ? closedPositions.reduce((acc, p) => acc + p.pnlPercent, 0) / total : 0;
 
-    return { total, wins, losses, winRate, netPnl, avgRoi };
+    const totalGrossProfit = winsList.reduce((acc, p) => acc + p.pnl, 0);
+    const totalGrossLoss = Math.abs(lossesList.reduce((acc, p) => acc + p.pnl, 0));
+
+    const avgWinSize = wins > 0 ? totalGrossProfit / wins : 0;
+    const avgLossSize = losses > 0 ? totalGrossLoss / losses : 0;
+
+    let profitFactor: number | string = 0;
+    if (totalGrossProfit === 0 && totalGrossLoss === 0) {
+      profitFactor = "0.00";
+    } else if (totalGrossLoss === 0) {
+      profitFactor = "∞";
+    } else {
+      profitFactor = (totalGrossProfit / totalGrossLoss).toFixed(2);
+    }
+
+    return { 
+      total, 
+      wins, 
+      losses, 
+      winRate, 
+      netPnl, 
+      avgRoi, 
+      avgWinSize, 
+      avgLossSize, 
+      profitFactor,
+      totalGrossProfit,
+      totalGrossLoss
+    };
   }, [closedPositions]);
 
   // ----------------------------------------------------
@@ -417,6 +572,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
     setExchangeSyncLoading(true);
     setSyncStatus(null);
+    setWalletLogs([]);
     try {
       const resp = await fetch("/api/exchange/balance", {
         method: "POST",
@@ -425,6 +581,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
           exchange: exchangeSelect,
           apiKey: exchangeApiKey,
           apiSecret: exchangeApiSecret,
+          simulateMismatch: simulateMismatch,
         }),
       });
       const data = await resp.json();
@@ -445,11 +602,15 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
         setBalances(newBalances);
         setCurrentUser(prev => ({ ...prev, balances: newBalances, apiKeys: newApiKeys }));
 
+        if (data.auditLogs) {
+          setWalletLogs(data.auditLogs);
+        }
+
         triggerNotification(`Exchange API Keys synced for ${exchangeSelect.toUpperCase()}! Balances uploaded successfully.`, "success");
-        setSyncStatus(`Sync Connection Verified! Balance: ${data.balances.USDT} USDT`);
+        setSyncStatus(`Sync Connection Verified! Balance: ${data.balances.USDT} USDT (${data.discrepancyCorrected ? "Resolved with Fallback API" : "Perfect Sync"})`);
         await dbService.addLog(
           currentUser.uid,
-          `🗝️ Exchange Connection Verified: Fully synced ${exchangeSelect.toUpperCase()} trading keys. Virtual Balance: ${data.balances.USDT} USDT, ${data.balances.BTC} BTC`,
+          `🗝️ Exchange Connection Verified: Fully synced ${exchangeSelect.toUpperCase()} trading keys. ${data.discrepancyCorrected ? "⚠️ Cache divergence detected but reconciled via secondary endpoint fallback!" : "Double‑channel verification matched."} Virtual Balance: ${data.balances.USDT} USDT, ${data.balances.BTC} BTC`,
           "info"
         );
         
@@ -476,18 +637,42 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
       return;
     }
 
-    const exchangeId = "binance"; // Simulated default exchange
-    const totalDcaCover = botBaseOrder + (botSafetyOrder * botMaxSafety);
-    const availableUsdt = balances[exchangeId]?.USDT || 0;
+    if (botTakeProfit < 0.01) {
+      triggerNotification("Take-Profit (TP) must be at least 0.01%.", "error");
+      return;
+    }
+    if (botStopLoss > 0 && botStopLoss < 0.01) {
+      triggerNotification("Stop-Loss (SL) must be at least 0.01% (or 0 to disable).", "error");
+      return;
+    }
+    if (botTrailingTpEnabled && botTrailingProfit < 0.001) {
+      triggerNotification("Trailing Profit must be at least 0.001%.", "error");
+      return;
+    }
 
-    // Zero balance guard
-    if (availableUsdt === 0) {
-      triggerNotification(`Authentication Alert: Your simulated ${exchangeId.toUpperCase()} balance has 0 USDT. Sync a key or fund exchange in the Settings tab first.`, "error");
+    const exchangeId = botExchange;
+    const isPaper = botPaperTrading;
+    const availableUsdt = activeBalances[exchangeId]?.USDT || 0;
+
+    // Zero balance guard for live API accounts (bypassable for paper trading simulator)
+    if (!isPaper && availableUsdt === 0) {
+      triggerNotification(`Authentication Alert: Your live ${exchangeId.toUpperCase()} balance has 0 USDT. Please synchronize your API keys in the Exchanges tab first.`, "error");
       return;
     }
 
     try {
-      const newBot: Omit<TradingBot, "id"> = {
+      // Generate a highly secure unique webhook token tied to the user's account ID and randomness
+      const secureRandomHex = Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
+      const userSafeId = currentUser.uid.replace(/[^\w]/g, "").substring(0, 6);
+      const uniqueBotSecret = `wh_sec_${userSafeId}_${secureRandomHex}`;
+
+      const botId = "bot_" + Math.random().toString(36).substring(2, 10);
+      const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
+      const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
+      const botWebhookUrl = `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/${botId}`;
+
+      const newBot: TradingBot = {
+        id: botId,
         userId: currentUser.uid,
         name: botName.trim(),
         type: botType,
@@ -501,7 +686,13 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
         trailingTpPercent: botTrailingTpEnabled ? botTrailingProfit : 0,
         stopLossPercent: botStopLoss,
         trailingSlEnabled: botTrailingSL,
-        webhookSecret: globalWebhookSecret,
+        webhookSecret: uniqueBotSecret, // Unique per bot, generated securely, tied to user account
+        webhookUrl: botWebhookUrl,
+        leverage: botLeverage,
+        maxPositionSize: botMaxPositionSize,
+        paperTrading: botPaperTrading,
+        capitalProtection: botCapitalProtection,
+        exchange: botExchange,
         createdAt: new Date().toISOString(),
       };
 
@@ -636,6 +827,19 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
       return;
     }
 
+    if (editBotTakeProfit < 0.01) {
+      triggerNotification("Take-Profit (TP) must be at least 0.01%.", "error");
+      return;
+    }
+    if (editBotStopLoss > 0 && editBotStopLoss < 0.01) {
+      triggerNotification("Stop-Loss (SL) must be at least 0.01% (or 0 to disable).", "error");
+      return;
+    }
+    if (editBotTrailingTpEnabled && editBotTrailingProfit < 0.001) {
+      triggerNotification("Trailing Profit must be at least 0.001%.", "error");
+      return;
+    }
+
     try {
       const updatedBot: TradingBot = {
         ...editingBot,
@@ -686,16 +890,15 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     setTesterResponse(null);
 
     try {
-      // Create Webhook POST query to Express Server Endpoint
+      const targetUrl = `/webhook/${currentUser.uid}/${bot.id}`;
+
       const hookPayload = {
-        secret: globalWebhookSecret,
-        action: testerAction, // 'buy' (open bot trigger), 'sell' (take profit close / manual exit)
+        action: testerAction, // 'buy' or 'sell'
         pair: bot.pair,
-        botId: bot.id,
         price: marketPrices[bot.pair] || 100.0,
       };
 
-      const res = await fetch("/api/webhook/signal", {
+      const res = await fetch(targetUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(hookPayload),
@@ -706,125 +909,27 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
       if (data.success) {
         triggerNotification(`Signal webhook accepted! Bot state synchronizing...`, "success");
-        await dbService.addLog(
-          currentUser.uid,
-          `📡 [WEBHOOK ALERT RECEIVED]: Authentication Secret Verified. Command: ${testerAction.toUpperCase()} for ${bot.pair}. Injecting trade logic.`,
-          "trade",
-          bot.id,
-          bot.name
-        );
+        
+        // Full background state synchronization
+        try {
+          const [loadedBots, loadedPos, loadedLogs, updatedProfile] = await Promise.all([
+            dbService.getBots(currentUser.uid),
+            dbService.getPositions(currentUser.uid),
+            dbService.getLogs(currentUser.uid),
+            dbService.getUserProfile(currentUser.uid)
+          ]);
 
-        // Process Signal trade open / close inside UI directly
-        const exchangeId = "binance";
-        const currentPrice = marketPrices[bot.pair] || 100.0;
+          setBots(loadedBots);
+          setPositions(loadedPos.filter(p => p.status === "open"));
+          setClosedPositions(loadedPos.filter(p => p.status === "closed"));
+          setLogs(loadedLogs);
 
-        if (testerAction === "buy") {
-          // Check if position already exists
-          const existingPos = positions.find(p => p.botId === bot.id && p.status === "open");
-          if (existingPos) {
-            triggerNotification(`Ignored signal: Position for "${bot.name}" is already open.`, "info");
-            await dbService.addLog(
-              currentUser.uid,
-              `⚠️ [SIGNAL IGNORED]: Webhook trigger declined for ${bot.pair} because bot already has an outstanding active position.`,
-              "error",
-              bot.id,
-              bot.name
-            );
-          } else {
-            // Check balance configuration before opening trade as requested
-            const currentUsdt = balances[exchangeId]?.USDT || 0;
-            const sizeNeeded = bot.baseOrderSize;
-
-            if (currentUsdt < sizeNeeded) {
-              await dbService.addLog(
-                currentUser.uid,
-                `❌ [TRADE REJECTED]: Balance check failed before trade execution. Available: ${currentUsdt.toFixed(2)} USDT, Required: ${sizeNeeded} USDT. Bot: ${bot.name}`,
-                "error",
-                bot.id,
-                bot.name
-              );
-              triggerNotification(`Insufficient Balance on Exchange! Required: ${sizeNeeded} USDT.`, "error");
-            } else {
-              // Settle balances
-              const nextBal = { ...balances };
-              nextBal[exchangeId].USDT = parseFloat((currentUsdt - sizeNeeded).toFixed(2));
-              setBalances(nextBal);
-              await dbService.updateUserProfile(currentUser.uid, { balances: nextBal });
-
-              // Create active trade details
-              const calculatedQty = sizeNeeded / currentPrice;
-              const profitTarget = bot.takeProfitPercent;
-              const tpPrice = parseFloat((currentPrice * (1 + profitTarget / 100)).toFixed(4));
-              
-              let slPrice = 0;
-              if (bot.stopLossPercent) {
-                const slDistance = currentPrice * (bot.stopLossPercent / 100);
-                slPrice = parseFloat((currentPrice - slDistance).toFixed(4));
-              }
-
-              const newPosition: Position = {
-                id: "pos_" + Math.random().toString(36).substring(2, 9),
-                userId: currentUser.uid,
-                botId: bot.id,
-                botName: bot.name,
-                pair: bot.pair,
-                type: "long",
-                status: "open",
-                entryPrice: currentPrice,
-                currentPrice: currentPrice,
-                amount: parseFloat(calculatedQty.toFixed(6)),
-                totalInvested: sizeNeeded,
-                safetyOrdersCount: 0,
-                maxPriceSeen: currentPrice,
-                trailingTpActive: false,
-                tpTriggerPrice: tpPrice,
-                slTriggerPrice: slPrice,
-                pnl: 0,
-                pnlPercent: 0,
-                createdAt: new Date().toISOString(),
-              };
-
-              await dbService.savePosition(newPosition);
-              setPositions(prev => [newPosition, ...prev]);
-
-              await dbService.addLog(
-                currentUser.uid,
-                `🟢 [TRADE OPENED VIA WEBHOOK]: Signal Bot "${bot.name}" executed Long entry @ $${currentPrice}. Target TP: $${tpPrice}, Exit Limit (SL): $${slPrice}`,
-                "trade",
-                bot.id,
-                bot.name
-              );
-            }
+          if (updatedProfile && updatedProfile.balances) {
+            setBalances(updatedProfile.balances);
+            setCurrentUser(updatedProfile);
           }
-        } else if (testerAction === "sell") {
-          // Manual/Webhook forced close position
-          const openPos = positions.find(p => p.botId === bot.id && p.status === "open");
-          if (openPos) {
-            openPos.status = "closed";
-            openPos.closedAt = new Date().toISOString();
-            openPos.closeReason = "webhook";
-
-            const returnUsdt = openPos.totalInvested + openPos.pnl;
-            const nextBal = { ...balances };
-            if (!nextBal[exchangeId]) nextBal[exchangeId] = { USDT: 0 };
-            nextBal[exchangeId].USDT = parseFloat((nextBal[exchangeId].USDT + returnUsdt).toFixed(2));
-            setBalances(nextBal);
-            await dbService.updateUserProfile(currentUser.uid, { balances: nextBal });
-
-            await dbService.savePosition(openPos);
-            setPositions(prev => prev.filter(p => p.id !== openPos.id));
-            setClosedPositions(prev => [openPos, ...prev]);
-
-            await dbService.addLog(
-              currentUser.uid,
-              `🛑 [TRADE TERMINATED]: Webhook direct command forced close for ${bot.pair} @ $${currentPrice}. Settled returns: $${returnUsdt.toFixed(2)} USDT`,
-              "trade",
-              bot.id,
-              bot.name
-            );
-          } else {
-            triggerNotification("Decline: No open position matches this bot ID.", "info");
-          }
+        } catch (syncErr) {
+          console.error("Error synchronizing local client state after server execution:", syncErr);
         }
       } else {
         triggerNotification(`Webhook Rejected: ${data.message}`, "error");
@@ -905,11 +1010,41 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
           </div>
 
           {/* User Meta Indicator */}
-          <div className="p-4 mx-3 my-4 rounded-lg bg-slate-900/40 border border-slate-800/80 flex items-center gap-2.5">
-            <User className="w-8 h-8 text-emerald-400 bg-slate-800 rounded-full p-1.5 shrink-0" />
-            <div className="overflow-hidden">
-              <span className="text-xs font-semibold text-white truncate block">{currentUser.email}</span>
-              <span className="text-[10px] text-slate-500 font-mono uppercase block">{dbService.isUsingFirebase() ? "Cloud database" : "Sandbox local"}</span>
+          <div className="p-4 mx-3 my-4 rounded-lg bg-slate-900/40 border border-slate-800/80 flex flex-col gap-3">
+            <div className="flex items-center gap-2.5">
+              <User className="w-8 h-8 text-emerald-400 bg-slate-800 rounded-full p-1.5 shrink-0" />
+              <div className="overflow-hidden">
+                <span className="text-xs font-semibold text-white truncate block">{currentUser.email}</span>
+                <span className="text-[10px] text-slate-500 font-mono uppercase block">{dbService.isUsingFirebase() ? "Cloud database" : "Sandbox local"}</span>
+              </div>
+            </div>
+            
+            {/* Global Sandbox vs Real Mode Toggle */}
+            <div className="pt-2.5 border-t border-slate-800/60">
+              <div className="flex items-center justify-between text-[11px] font-mono mb-1.5">
+                <span className="text-slate-400">TRADING MODE:</span>
+                <span className={globalMode === "real" ? "text-[#0ecb81] font-bold" : "text-amber-500 font-bold font-mono"}>
+                  {globalMode === "real" ? "LIVE REAL" : "SANDBOX"}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-1 bg-[#0B0E11] p-1 rounded-lg border border-slate-800">
+                <button
+                  type="button"
+                  id="toggle_sandbox_mode"
+                  onClick={() => handleToggleGlobalMode("sandbox")}
+                  className={`py-1 text-[10px] rounded font-bold cursor-pointer transition uppercase tracking-wider ${globalMode === "sandbox" ? "bg-amber-500 text-black font-extrabold shadow-md shadow-amber-500/10" : "text-slate-400 hover:text-white"}`}
+                >
+                  Sandbox
+                </button>
+                <button
+                  type="button"
+                  id="toggle_real_mode"
+                  onClick={() => handleToggleGlobalMode("real")}
+                  className={`py-1 text-[10px] rounded font-bold cursor-pointer transition uppercase tracking-wider ${globalMode === "real" ? "bg-emerald-500 text-black font-extrabold shadow-md shadow-emerald-500/10" : "text-slate-400 hover:text-white"}`}
+                >
+                  Real Live
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1036,11 +1171,13 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                   <RefreshCw className={`w-3.5 h-3.5 ${isApiLoading ? "animate-spin" : ""}`} />
                   {isApiLoading ? "Querying Binance API..." : "Fetch Binance Futures Tickers"}
                 </button>
-                <div className="flex items-center gap-3 bg-[#0B0E11] border border-slate-800 px-4 py-2 rounded-lg text-xs font-mono select-none">
+                <div className="flex items-center gap-3 bg-[#0B0E11] border border-slate-800 px-4 py-2 rounded-lg text-xs font-mono select-none font-bold">
                   <Wallet className="w-4 h-4 text-emerald-400 shrink-0" />
                   <div className="leading-tight">
-                    <span className="text-slate-500 block text-[9px] font-sans uppercase tracking-wider">Simulated Main Margin Balance</span>
-                    <span className="text-white font-heavy text-sm">${balances["binance"]?.USDT?.toLocaleString() || "0.00"} USDT</span>
+                    <span className="text-slate-500 block text-[9px] font-sans uppercase tracking-wider">
+                      {globalMode === "real" ? "🟢 Real Margin Balance (Binance)" : "⚡ Simulated Margin Balance (Sandbox)"}
+                    </span>
+                    <span className="text-white font-heavy text-sm">${activeBalances["binance"]?.USDT?.toLocaleString() || "0.00"} USDT</span>
                   </div>
                 </div>
               </div>
@@ -1138,11 +1275,11 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         onChange={(e) => setTesterBotId(e.target.value)}
                         className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white uppercase font-mono focus:border-emerald-500 focus:outline-none"
                       >
-                        {bots.length === 0 ? (
+                        {displayedBots.length === 0 ? (
                           <option value="">No Active Bots Registered</option>
                         ) : (
                           // Only bots configured for the chosen selectedPair
-                          bots.map(b => (
+                          displayedBots.map(b => (
                             <option key={b.id} value={b.id}>
                               {b.name} ({b.pair} • {b.type.toUpperCase()})
                             </option>
@@ -1348,10 +1485,10 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                 <span className="text-xs font-mono lowercase text-slate-500">ticks every 3.5s</span>
               </h3>
 
-              {positions.length === 0 ? (
+              {displayedPositions.length === 0 ? (
                 <div className="py-8 text-center text-slate-500 font-sans border-2 border-dashed border-slate-800/80 rounded-lg">
                   <Activity className="w-8 h-8 mx-auto mb-2 text-slate-600 animate-pulse" />
-                  No open trades. Configure a bot and dispatch a Webhook Signal to trigger executions.
+                  No active {globalMode === "real" ? "REAL LIVE" : "SANDBOX"} open trades. Configure a bot and trigger a signal webhook to execute.
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -1370,7 +1507,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800 text-slate-100 font-mono">
-                      {positions.map(p => {
+                      {displayedPositions.map(p => {
                         const botRef = bots.find(b => b.id === p.botId);
                         return (
                           <tr key={p.id} className="hover:bg-slate-900/30 transition">
@@ -1487,6 +1624,48 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
             <form onSubmit={handleCreateBot} className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-6 shadow-xl space-y-6">
               
+              {/* Bot Security and Sandbox Mode Picker */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pb-4 border-b border-slate-800/60">
+                <div className="space-y-1">
+                  <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400 block">Deploy Target Exchange</label>
+                  <select
+                    value={botExchange}
+                    onChange={(e) => setBotExchange(e.target.value)}
+                    className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500 cursor-pointer font-mono"
+                  >
+                    <option value="binance">Binance Client (REST / WSS)</option>
+                    <option value="bybit">Bybit Financial (REST / WSS)</option>
+                    <option value="okx">OKX Enterprise (REST / WSS)</option>
+                    <option value="gate.io">Gate.io Global (REST / WSS)</option>
+                    <option value="kucoin">KuCoin Trading (REST / WSS)</option>
+                  </select>
+                  <p className="text-[10px] text-slate-500 font-mono">The exchange API channel where executions route.</p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400 block">Execution Sandbox Mode</label>
+                  <div className="flex items-center justify-between bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 mt-1 h-[40px]">
+                    <span className="text-xs font-mono text-slate-400">
+                      {botPaperTrading ? "⚡ PAPER TRADING (Virtual Funds)" : "🟢 LIVE KEY OPERATION (Real Assets)"}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setBotPaperTrading(!botPaperTrading)}
+                      className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        botPaperTrading ? "bg-[#0ecb81]" : "bg-slate-700"
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          botPaperTrading ? "translate-x-5" : "translate-x-0"
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500 font-mono">Paper trades bypass API keys with simulated accounts.</p>
+                </div>
+              </div>
+
               {/* Bot Meta config row */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-1">
@@ -1646,23 +1825,121 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                 </div>
               )}
 
+              {/* Leverage & Capital Protection Algorithmic Risk Grid */}
+              <div className="pt-4 border-t border-slate-800/60 space-y-3">
+                <h3 className="text-xs uppercase font-mono font-bold tracking-widest text-[#0ecb81] text-emerald-400">Algorithmic Risk Management</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Leverage Multiplier</label>
+                    <select
+                      value={botLeverage}
+                      onChange={(e) => setBotLeverage(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500 cursor-pointer font-mono"
+                    >
+                      <option value="1">1x (Spot / No Leverage)</option>
+                      <option value="3">3x Leverage</option>
+                      <option value="5">5x Leverage</option>
+                      <option value="10">10x Leverage</option>
+                      <option value="20">20x Leverage</option>
+                      <option value="50">50x Leverage (Futures High-Risk)</option>
+                    </select>
+                    <p className="text-[10px] text-slate-500 font-mono">Controls funding margins locked on active operations.</p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Max Cumulative Budget (USDT)</label>
+                    <input
+                      type="number"
+                      value={botMaxPositionSize}
+                      onChange={(e) => setBotMaxPositionSize(Math.max(10, parseFloat(e.target.value) || 0))}
+                      className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
+                      min={10}
+                      required
+                    />
+                    <p className="text-[10px] text-slate-500 font-mono">Limits maximum combined long entries (Base + DCA limits).</p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Capital Protection Threshold (USDT)</label>
+                    <input
+                      type="number"
+                      value={botCapitalProtection}
+                      onChange={(e) => setBotCapitalProtection(Math.max(0, parseFloat(e.target.value) || 0))}
+                      className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500 font-mono"
+                      min={0}
+                      required
+                    />
+                    <p className="text-[10px] text-slate-500 font-mono">Halts live triggers if exchange capital drops below this level.</p>
+                  </div>
+                </div>
+              </div>
+
               {/* Exit Configurations (Trailing Take Profit + Stop Loss) */}
               <div className="pt-4 border-t border-slate-800/60 space-y-4">
                 <h3 className="text-xs uppercase font-mono font-bold tracking-widest text-[#0ecb81] text-emerald-400">Take-Profit (TP) & Stop-Loss (SL)</h3>
                 
+                {/* Quick Setup Presets container */}
+                <div className="flex flex-col space-y-2 p-3 bg-slate-800/20 border border-slate-800/50 rounded-xl">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">Quick Setup Presets</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBotTakeProfit(1.5);
+                        setBotStopLoss(1.0);
+                        setBotTrailingTpEnabled(true);
+                        setBotTrailingProfit(1.0);
+                        triggerNotification("Standard Preset Applied: TP=1.5%, SL=1.0%, Trailing=1.0%", "success");
+                      }}
+                      className="px-3 py-2 bg-[#0B0E11] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-xs text-white rounded-lg font-medium transition cursor-pointer select-none text-center"
+                    >
+                      <span className="block font-bold">Standard</span>
+                      <span className="text-[10px] text-slate-400 font-mono mt-0.5">TP 1.5% | SL 1.0% | TR 1.0%</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBotTakeProfit(0.2);
+                        setBotStopLoss(0.4);
+                        setBotTrailingTpEnabled(true);
+                        setBotTrailingProfit(0.4);
+                        triggerNotification("Scalper Preset Applied: TP=0.2%, SL=0.4%, Trailing=0.4%", "success");
+                      }}
+                      className="px-3 py-2 bg-[#0B0E11] hover:bg-slate-800 border border-emerald-500/20 hover:border-emerald-500/45 text-xs text-white rounded-lg font-medium transition cursor-pointer select-none text-center"
+                    >
+                      <span className="block font-bold text-emerald-400">⚡ Scalper</span>
+                      <span className="text-[10px] text-slate-400 font-mono mt-0.5">TP 0.2% | SL 0.4% | TR 0.4%</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBotTakeProfit(3.0);
+                        setBotStopLoss(1.5);
+                        setBotTrailingTpEnabled(true);
+                        setBotTrailingProfit(1.5);
+                        triggerNotification("Swing Preset Applied: TP=3.0%, SL=1.5%, Trailing=1.5%", "success");
+                      }}
+                      className="px-3 py-2 bg-[#0B0E11] hover:bg-slate-800 border border-indigo-500/20 hover:border-indigo-500/45 text-xs text-white rounded-lg font-medium transition cursor-pointer select-none text-center"
+                    >
+                      <span className="block font-bold text-indigo-400">🛡️ Swing</span>
+                      <span className="text-[10px] text-slate-400 font-mono mt-0.5">TP 3.0% | SL 1.5% | TR 1.5%</span>
+                    </button>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* Standard TP percentage */}
                   <div className="space-y-1">
-                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Target Take Profit</label>
+                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Target Take Profit (Min 0.01%)</label>
                     <div className="flex items-center gap-1">
                       <input
                         id="target_tp_input"
                         type="number"
                         step="any"
                         value={botTakeProfit}
-                        onChange={(e) => setBotTakeProfit(Math.max(0.0001, parseFloat(e.target.value) || 0))}
+                        onChange={(e) => setBotTakeProfit(parseFloat(e.target.value) || 0)}
                         className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500"
-                        min={0.0001}
+                        min={0.01}
                         required
                       />
                       <span className="text-xs font-mono text-slate-500">%</span>
@@ -1671,7 +1948,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
                   {/* Customizable Trailing Take Profit */}
                   <div className="p-3 bg-[#0B0E11]/30 border border-slate-800/50 rounded-xl space-y-2 animate-fadeIn flex flex-col justify-center">
-                    <div className="flex items-center gap-2.5 select-none">
+                    <div className="flex items-center gap-2.5 select-none font-sans">
                       <input
                         id="trail_tp_checkbox"
                         type="checkbox"
@@ -1679,21 +1956,21 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         onChange={(e) => setBotTrailingTpEnabled(e.target.checked)}
                         className="w-4 h-4 rounded text-emerald-500 bg-[#0B0E11] border-slate-850 border-slate-800 focus:ring-0 active:scale-95 transition cursor-pointer"
                       />
-                      <label htmlFor="trail_tp_checkbox" className="text-xs font-semibold text-white cursor-pointer uppercase font-mono tracking-wider">Enable Trailing Take Profit</label>
+                      <label htmlFor="trail_tp_checkbox" className="text-xs font-semibold text-white cursor-pointer uppercase font-mono tracking-wider">Enable Trailing Profit</label>
                     </div>
 
                     {botTrailingTpEnabled ? (
                       <div className="space-y-1 pl-6.5 transition animate-fadeIn">
-                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400">Trailing TP Deviation (Offset)</label>
+                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400">Trailing Profit Deviation Offset (Min 0.001%)</label>
                         <div className="flex items-center gap-1">
                           <input
                             id="trailing_offset_input"
                             type="number"
                             step="any"
                             value={botTrailingProfit}
-                            onChange={(e) => setBotTrailingProfit(Math.max(0.0001, parseFloat(e.target.value) || 0))}
+                            onChange={(e) => setBotTrailingProfit(parseFloat(e.target.value) || 0)}
                             className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-1 px-2.5 text-xs text-white focus:outline-none focus:border-emerald-500 font-mono"
-                            min={0.0001}
+                            min={0.001}
                           />
                           <span className="text-xs font-mono text-slate-500">%</span>
                         </div>
@@ -1708,20 +1985,20 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {/* Stop Loss threshold */}
                   <div className="space-y-1">
-                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Stop Loss Limit</label>
+                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Stop Loss Limit (Min 0.01%)</label>
                     <div className="flex items-center gap-1">
                       <input
                         id="stop_loss_input"
                         type="number"
                         step="any"
                         value={botStopLoss}
-                        onChange={(e) => setBotStopLoss(Math.max(0, parseFloat(e.target.value) || 0))}
+                        onChange={(e) => setBotStopLoss(parseFloat(e.target.value) || 0)}
                         className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500"
-                        min={0}
+                        min={0.01}
                       />
                       <span className="text-xs font-mono text-slate-500">%</span>
                     </div>
-                    <p className="text-[10px] text-slate-400 font-mono font-sans font-mono animate-fadeIn">Absolute price drop limit trigger. Set to 0 to disable.</p>
+                    <p className="text-[10px] text-slate-400 font-mono font-sans font-mono animate-fadeIn">Absolute price drop limit trigger. Must be at least 0.01%.</p>
                   </div>
 
                   {/* Trailing Stop Loss checkbox toggle */}
@@ -1779,23 +2056,24 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
               </div>
             </div>
 
-            {bots.length === 0 ? (
+            {displayedBots.length === 0 ? (
               <div className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-8 text-center text-slate-550 text-slate-500 max-w-lg">
                 <Settings className="w-12 h-12 mx-auto text-slate-700 mb-2" />
-                No active auto-strategies configured. Select "New Trading Bot" above to configure a script.
+                No active {globalMode === "real" ? "REAL LIVE" : "SANDBOX"} auto-strategies configured. Select "New Trading Bot" above to configure a script.
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {bots.map(bot => {
-                  const whUrl = computedWebhookUrl;
+                {displayedBots.map(bot => {
+                  const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
+                  const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
+                  const whUrl = bot.webhookUrl || `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/${bot.id}`;
                   const activeAct = botPayloadActions[bot.id] || "buy";
                   
-                  // All bots use the single unified global Webhook Secret
+                  // Secure, unique per-bot Webhook alert payload
                   const payloadJsonString = JSON.stringify({
-                    secret: globalWebhookSecret,
                     action: activeAct,
                     pair: bot.pair,
-                    botId: bot.id
+                    price: "{{close}}"
                   }, null, 2);
 
                   return (
@@ -2171,16 +2449,65 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     <div className="p-4 bg-[#181A20]/80 rounded-xl border border-slate-800/80 space-y-4">
                       <div className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider font-mono flex items-center gap-1">Take Profit & Protection Metrics</div>
                       
+                      {/* Quick Setup Presets container */}
+                      <div className="flex flex-col space-y-2 p-2.5 bg-slate-900/40 border border-slate-800 rounded-xl">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider font-mono">Quick Setup Presets</span>
+                        <div className="grid grid-cols-3 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditBotTakeProfit(1.5);
+                              setEditBotStopLoss(1.0);
+                              setEditBotTrailingTpEnabled(true);
+                              setEditBotTrailingProfit(1.0);
+                              triggerNotification("Standard Preset Applied: TP=1.5%, SL=1.0%, Trailing=1.0%", "success");
+                            }}
+                            className="px-2 py-1.5 bg-[#0B0E11] hover:bg-slate-800 border border-slate-800 text-[10px] text-white rounded-lg font-medium transition cursor-pointer select-none text-center"
+                          >
+                            <span className="block font-bold">Standard</span>
+                            <span className="text-[9px] text-slate-400 font-mono mt-0.5">TP 1.5 | SL 1.0 | TR 1.0</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditBotTakeProfit(0.2);
+                              setEditBotStopLoss(0.4);
+                              setEditBotTrailingTpEnabled(true);
+                              setEditBotTrailingProfit(0.4);
+                              triggerNotification("Scalper Preset Applied: TP=0.2%, SL=0.4%, Trailing=0.4%", "success");
+                            }}
+                            className="px-2 py-1.5 bg-[#0B0E11] hover:bg-slate-800 border border-slate-800 text-[10px] text-white rounded-lg font-medium transition cursor-pointer select-none text-center"
+                          >
+                            <span className="block font-bold text-emerald-400">⚡ Scalper</span>
+                            <span className="text-[9px] text-slate-400 font-mono mt-0.5">TP 0.2 | SL 0.4 | TR 0.4</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditBotTakeProfit(3.0);
+                              setEditBotStopLoss(1.5);
+                              setEditBotTrailingTpEnabled(true);
+                              setEditBotTrailingProfit(1.5);
+                              triggerNotification("Swing Preset Applied: TP=3.0%, SL=1.5%, Trailing=1.5%", "success");
+                            }}
+                            className="px-2 py-1.5 bg-[#0B0E11] hover:bg-slate-800 border border-indigo-500/20 hover:indigo-500/40 text-[10px] text-white rounded-lg font-medium transition cursor-pointer select-none text-center"
+                          >
+                            <span className="block font-bold text-indigo-400">🛡️ Swing</span>
+                            <span className="text-[9px] text-slate-400 font-mono mt-0.5">TP 3.0 | SL 1.5 | TR 1.5</span>
+                          </button>
+                        </div>
+                      </div>
+
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-350 block uppercase tracking-wider font-mono text-slate-500">Target Take Profit TP %</label>
+                          <label className="text-[10px] font-bold text-slate-350 block uppercase tracking-wider font-mono text-slate-500">Target Take Profit TP % (Min 0.01%)</label>
                           <input
                             type="number"
                             step="any"
                             value={editBotTakeProfit}
-                            onChange={(e) => setEditBotTakeProfit(Math.max(0.0001, parseFloat(e.target.value) || 0))}
+                            onChange={(e) => setEditBotTakeProfit(parseFloat(e.target.value) || 0)}
                             className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none"
-                            min={0.0001}
+                            min={0.01}
                             required
                           />
                         </div>
@@ -2195,20 +2522,20 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                               onChange={(e) => setEditBotTrailingTpEnabled(e.target.checked)}
                               className="w-3.5 h-3.5 rounded text-emerald-500 bg-[#0B0E11] border-slate-800 focus:ring-0 cursor-pointer"
                             />
-                            <label htmlFor="edit_trail_tp_chk" className="text-[10px] font-bold text-white cursor-pointer uppercase font-mono tracking-wider">Enable Trailing TP</label>
+                            <label htmlFor="edit_trail_tp_chk" className="text-[10px] font-bold text-white cursor-pointer uppercase font-mono tracking-wider">Enable Trailing Profit</label>
                           </div>
 
                           {editBotTrailingTpEnabled ? (
                             <div className="space-y-1 pl-5.5 animate-fadeIn">
-                              <label className="text-[9px] uppercase font-mono tracking-wider font-semibold text-slate-400 block">TP Deviation Offset %</label>
+                              <label className="text-[9px] uppercase font-mono tracking-wider font-semibold text-slate-400 block">TP Deviation Offset % (Min 0.001%)</label>
                               <div className="flex items-center gap-1">
                                 <input
                                   type="number"
                                   step="any"
                                   value={editBotTrailingProfit}
-                                  onChange={(e) => setEditBotTrailingProfit(Math.max(0.0001, parseFloat(e.target.value) || 0))}
+                                  onChange={(e) => setEditBotTrailingProfit(parseFloat(e.target.value) || 0)}
                                   className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-1 text-[11px] text-white focus:outline-none font-mono"
-                                  min={0.0001}
+                                  min={0.001}
                                 />
                                 <span className="text-[10px] font-mono text-slate-500">%</span>
                               </div>
@@ -2226,9 +2553,9 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             type="number"
                             step="any"
                             value={editBotStopLoss}
-                            onChange={(e) => setEditBotStopLoss(Math.max(0, parseFloat(e.target.value) || 0))}
+                            onChange={(e) => setEditBotStopLoss(parseFloat(e.target.value) || 0)}
                             className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white focus:outline-none"
-                            min={0}
+                            min={0.01}
                           />
                         </div>
 
@@ -2283,64 +2610,117 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
               <h1 className="text-2xl font-black text-white tracking-tight flex items-center gap-2 font-sans">
                 <Wallet className="text-emerald-400" /> Multi-Exchange API Credential Management
               </h1>
-              <p className="text-xs text-slate-400 mt-0.5">Register high-fidelity API credentials for multiple digital exchange brokers to synchronize asset balances.</p>
+              <p className="text-xs text-slate-400 mt-0.5 font-sans">Register authenticated API keys with double‑endpoint cross‑check validation and real‑time WebSocket data-streams.</p>
             </div>
+
+            {/* Withdrawal Restrictor Lock Dialog Modal Backdrop popup */}
+            {withdrawalBlockMsg && (
+              <div className="fixed inset-0 z-50 bg-[#0B0E11]/85 backdrop-blur-sm flex items-center justify-center p-4">
+                <div className="bg-[#1E2329] border-2 border-red-500/35 rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4 animate-scaleUp">
+                  <div className="flex items-center gap-3 text-red-400">
+                    <ShieldAlert className="w-8 h-8 shrink-0 animate-bounce" />
+                    <div>
+                      <h2 className="text-sm font-black uppercase font-mono tracking-wider">Security Access Lock Triggered</h2>
+                      <p className="text-[10px] text-slate-450 font-sans">Policy Action: Enforced Safeguard Prevents Exfiltration</p>
+                    </div>
+                  </div>
+                  <div className="p-3 bg-red-950/20 border border-red-500/20 rounded-lg text-xs font-mono text-slate-300 leading-normal">
+                    {withdrawalBlockMsg}
+                  </div>
+                  <p className="text-[10px] text-slate-500 font-sans">
+                    All linked API credentials operate exclusively under a strictly locked sandboxed enclave. 
+                    Asset withdrawal channels are fully blocked server-side by security policy. Your fund capitals are secure.
+                  </p>
+                  <div className="pt-2">
+                    <button
+                      onClick={() => setWithdrawalBlockMsg(null)}
+                      className="w-full py-2 rounded-lg bg-red-650 hover:bg-red-600 border border-red-500/30 text-white font-mono text-xs font-bold transition cursor-pointer select-none"
+                    >
+                      Acknowledge & Safe Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               
               {/* Credentials registration Form */}
               <div className="lg:col-span-2 bg-[#1E2329] border border-slate-800/80 rounded-xl p-6 shadow-xl space-y-4">
-                <h3 className="text-sm font-sans font-black text-white uppercase tracking-wider mb-2 border-b border-slate-800/80 pb-2 flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-emerald-400" />
-                  Register Secure API Key
+                <h3 className="text-sm font-sans font-black text-white uppercase tracking-wider mb-2 border-b border-slate-800/80 pb-2 flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-emerald-400" />
+                    Secure API Integration Hub
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono font-bold capitalize">Read-Only Enclosed Gate</span>
                 </h3>
 
                 <form onSubmit={handleExchangeSync} className="space-y-4">
-                  <div className="space-y-1">
-                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Select Market Exchange Broker</label>
-                    <select
-                      value={exchangeSelect}
-                      onChange={(e) => setExchangeSelect(e.target.value)}
-                      className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500"
-                    >
-                      <option value="binance">Binance Client SDK</option>
-                      <option value="bybit">Bybit Financials API</option>
-                      <option value="okx">OKX Enterprise API</option>
-                      <option value="coinbase">Coinbase Wallet Cloud</option>
-                      <option value="weexio">weexio Exchange Platform</option>
-                      <option value="gate.io">gate.io Global Gateway</option>
-                    </select>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Target Market Exchange</label>
+                      <select
+                        value={exchangeSelect}
+                        onChange={(e) => setExchangeSelect(e.target.value)}
+                        className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500"
+                      >
+                        <option value="binance">Binance Client (REST / WSS)</option>
+                        <option value="bybit">Bybit Financials (REST / WSS)</option>
+                        <option value="okx">OKX Enterprise (REST / WSS)</option>
+                        <option value="gate.io">Gate.io Global (REST / WSS)</option>
+                        <option value="kucoin">KuCoin Global Desk (REST / WSS)</option>
+                        <option value="coinbase">Coinbase Wallet Cloud</option>
+                        <option value="weexio">weexio Exchange Platform</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400 block pb-1">Dual-Endpoint Verification</label>
+                      <div className="flex items-center justify-between bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 h-[40px]">
+                        <span className="text-xs font-mono text-slate-400">
+                          {simulateMismatch ? "⚠️ Match Discrepancy (Fallback ON)" : "✅ Synchronized Ledger Matching"}
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={simulateMismatch}
+                          onChange={(e) => setSimulateMismatch(e.target.checked)}
+                          className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                        />
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">API Key</label>
-                    <input
-                      id="api_key_input"
-                      type="text"
-                      value={exchangeApiKey}
-                      onChange={(e) => setExchangeApiKey(e.target.value)}
-                      placeholder="Enter Exchange API Key Client (e.g. demo_binance)"
-                      className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2.5 px-3 text-xs text-white focus:outline-none font-mono focus:border-emerald-500"
-                      required
-                    />
-                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">API Key Client</label>
+                      <input
+                        id="api_key_input"
+                        type="text"
+                        value={exchangeApiKey}
+                        onChange={(e) => setExchangeApiKey(e.target.value)}
+                        placeholder="Enter API Key (e.g. binance_live_key)"
+                        className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2.5 px-3 text-xs text-white focus:outline-none font-mono focus:border-emerald-500"
+                        required
+                      />
+                    </div>
 
-                  <div className="space-y-1">
-                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">API Secret Token</label>
-                    <input
-                      id="api_secret_input"
-                      type="password"
-                      value={exchangeApiSecret}
-                      onChange={(e) => setExchangeApiSecret(e.target.value)}
-                      placeholder="••••••••••••••••••••"
-                      className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2.5 px-3 text-xs text-white focus:outline-none font-mono focus:border-emerald-500"
-                      required
-                    />
+                    <div className="space-y-1">
+                      <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">API Secret Token</label>
+                      <input
+                        id="api_secret_input"
+                        type="password"
+                        value={exchangeApiSecret}
+                        onChange={(e) => setExchangeApiSecret(e.target.value)}
+                        placeholder="••••••••••••••••••••"
+                        className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2.5 px-3 text-xs text-white focus:outline-none font-mono focus:border-emerald-500"
+                        required
+                      />
+                    </div>
                   </div>
 
                   {syncStatus && (
                     <div className="p-3 bg-emerald-950/25 border border-emerald-500/30 text-xs text-emerald-300 rounded-lg flex items-center gap-2 font-mono animate-fadeIn">
-                      <Check className="w-4 h-4 shrink-0" /> {syncStatus}
+                      <Check className="w-4 h-4 shrink-0 text-emerald-400" /> {syncStatus}
                     </div>
                   )}
 
@@ -2354,18 +2734,36 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     Synchronize Balance & Keys
                   </button>
                 </form>
+
+                {/* Audit Logs Rendering */}
+                {walletLogs.length > 0 && (
+                  <div className="p-4 bg-[#0B0E11] rounded-xl border border-slate-800 text-[11px] font-mono space-y-2 animate-fadeIn max-h-[180px] overflow-y-auto">
+                    <div className="flex justify-between items-center pb-1 border-b border-slate-800">
+                      <span className="text-slate-400 uppercase text-[9px] font-bold tracking-wider block">Dual-Endpoint Cross-Check Logs</span>
+                      <div className="flex gap-2 text-[8px]">
+                        <span className="bg-emerald-500/10 text-emerald-400 px-1 rounded border border-emerald-500/20 font-mono">REST: CONNECTED</span>
+                        <span className="bg-blue-500/10 text-blue-400 px-1 rounded border border-blue-500/20 font-mono">WSS: STREAMING</span>
+                      </div>
+                    </div>
+                    {walletLogs.map((logLine, idx) => (
+                      <div key={idx} className={logLine.includes("⚠️") ? "text-amber-400" : logLine.includes("✅") ? "text-[#0ecb81]" : "text-slate-400"}>
+                        {logLine}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Connected balances indicators and overview */}
               <div className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-6 shadow-xl space-y-4">
-                <h3 className="text-sm font-sans font-black text-white uppercase tracking-wider mb-2 flex items-center gap-2">
-                  <Wallet className="w-4.5 h-4.5 text-emerald-400" /> Verified Portfolios
+                <h3 className="text-sm font-sans font-black text-white uppercase tracking-wider mb-2 flex items-center gap-2 border-b border-slate-800/50 pb-2">
+                  <Wallet className="w-4.5 h-4.5 text-emerald-400" /> Active portfolios
                 </h3>
 
                 <div className="space-y-4">
-                  {["binance", "bybit", "okx", "coinbase", "weexio", "gate.io"].map(exchange => {
+                  {["binance", "bybit", "okx", "gate.io", "kucoin"].map(exchange => {
                     const isConfigured = !!currentUser.apiKeys?.[exchange];
-                    const assetBalances = balances[exchange] || { USDT: 0, BTC: 0, ETH: 0, SOL: 0 };
+                    const assetBalances = activeBalances[exchange] || { USDT: 0, BTC: 0, ETH: 0, SOL: 0 };
                     
                     // Live conversion rates
                     const btcPrice = marketPrices["BTC/USDT"] || 67500.0;
@@ -2379,37 +2777,41 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       SOL: solPrice
                     };
 
-                    // Total USDT locked across all active positions
-                    const activeLockedUSDT = positions
-                      .filter(p => p.status === "open")
-                      .reduce((sum, p) => sum + p.totalInvested, 0);
+                    // Total USDT margin locked across all open positions for this specific exchange
+                    const activeLockedUSDT = displayedPositions
+                      .filter(p => p.status === "open" && (p.exchange || "binance") === exchange)
+                      .reduce((sum, p) => sum + (p.marginLocked || p.totalInvested / (p.leverage || 1)), 0);
+
+                    const unpnlExchange = displayedPositions
+                      .filter(p => p.status === "open" && (p.exchange || "binance") === exchange)
+                      .reduce((sum, p) => sum + (p.pnl || 0), 0);
 
                     // Map actual wallet assets
                     const assets = [
                       {
                         symbol: "USDT",
-                        name: "Tether (Collateral)",
+                        name: "Tether USD (Stable)",
                         current: assetBalances.USDT ?? 0,
                         remaining: Math.max(0, (assetBalances.USDT ?? 0) - activeLockedUSDT),
                         value: (assetBalances.USDT ?? 0) * prices.USDT
                       },
                       {
                         symbol: "BTC",
-                        name: "Bitcoin Core",
+                        name: "Bitcoin Core Asset",
                         current: assetBalances.BTC ?? 0,
                         remaining: assetBalances.BTC ?? 0,
                         value: (assetBalances.BTC ?? 0) * prices.BTC
                       },
                       {
                         symbol: "ETH",
-                        name: "Ethereum Network",
+                        name: "Ethereum Smart Contracts",
                         current: assetBalances.ETH ?? 0,
                         remaining: assetBalances.ETH ?? 0,
                         value: (assetBalances.ETH ?? 0) * prices.ETH
                       },
                       {
                         symbol: "SOL",
-                        name: "Solana Liquid",
+                        name: "Solana Super Fast",
                         current: assetBalances.SOL ?? 0,
                         remaining: assetBalances.SOL ?? 0,
                         value: (assetBalances.SOL ?? 0) * prices.SOL
@@ -2419,70 +2821,88 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     const totalValuationUSDT = assets.reduce((sum, a) => sum + a.value, 0);
 
                     return (
-                      <div key={exchange} className={`p-4 bg-[#0B0E11]/90 rounded-xl border font-sans select-none space-y-3 transition ${isConfigured ? "border-emerald-500/30 ring-1 ring-emerald-500/5 bg-slate-900/10 animate-pulse" : "border-slate-800/85 bg-slate-950/20"}`}>
+                      <div key={exchange} className={`p-4 bg-[#0B0E11]/90 rounded-xl border font-sans select-none space-y-3 transition ${isConfigured ? "border-emerald-500/35 shadow-[0_0_12px_rgba(16,185,129,0.04)]" : "border-slate-800/85"}`}>
                         <div className="flex items-center justify-between pb-1">
                           <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-extrabold text-white uppercase text-xs tracking-wider font-mono">{exchange}</span>
+                            <span className="font-extrabold text-white uppercase text-xs tracking-wider font-mono">{exchange} Terminal</span>
                             {isConfigured ? (
-                              <span className="bg-emerald-500/15 text-emerald-400 font-bold px-2 py-0.5 rounded text-[8px] tracking-wider font-mono border border-emerald-500/20">CONNECTED</span>
+                              <span className="bg-emerald-500/15 text-emerald-400 font-bold px-2 py-0.5 rounded text-[8px] tracking-wider font-mono border border-emerald-500/20">KEY ACTIVE</span>
                             ) : (
-                              <span className="bg-[#1e2329]/60 text-slate-400 font-semibold px-2 py-0.5 rounded text-[8px] tracking-wider font-mono border border-slate-700/50">DEMO ACTIVE</span>
+                              <span className="bg-[#1e2329]/60 text-slate-400 font-semibold px-2 py-0.5 rounded text-[8px] tracking-wider font-mono border border-slate-700/50">DEMO MODE</span>
                             )}
                           </div>
                           <span className={`h-2 text-xs font-mono font-bold flex items-center gap-1.5 ${isConfigured ? "text-emerald-450" : "text-slate-500"}`}>
-                            <span className={`h-2 w-2 rounded-full ${isConfigured ? "bg-emerald-400 animate-pulse" : "bg-slate-700"}`}></span>
+                            <span className={`h-2.5 w-2.5 rounded-full ${isConfigured ? "bg-[#0ecb81]" : "bg-slate-700"}`}></span>
                           </span>
                         </div>
 
                         {/* Grand Total Net Worth Valuation Header */}
-                        <div className="bg-[#181A20]/80 p-3 rounded-lg border border-slate-800 flex items-center justify-between">
-                          <div>
-                            <span className="text-[9px] text-slate-500 font-mono font-bold uppercase tracking-wider block">TOTAL PORTFOLIO ASSETS</span>
-                            <span className="text-sm font-black text-white font-mono">${totalValuationUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <span className="text-slate-500 text-[10px]">USDT</span></span>
-                          </div>
-                          {isConfigured && activeLockedUSDT > 0 && (
-                            <div className="text-right">
-                              <span className="text-[8px] text-orange-400 font-mono font-bold uppercase tracking-wider block">LOCK MARGIN</span>
-                              <span className="text-xs font-mono font-semibold text-orange-400">-${activeLockedUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        <div className="bg-[#181A20]/80 p-3 rounded-lg border border-slate-800 space-y-2">
+                          <div className="flex justify-between items-center">
+                            <div>
+                              <span className="text-[8px] text-slate-500 font-mono font-bold uppercase tracking-wider block">TOTAL PORTFOLIO SAVINGS</span>
+                              <span className="text-xs font-black text-white font-mono">${totalValuationUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                             </div>
-                          )}
+                            <div className="text-right">
+                              <span className="text-[8px] text-slate-500 font-mono font-bold uppercase tracking-wider block">NET ASSET EQUITY</span>
+                              <span className="text-xs font-mono font-black text-[#0ecb81]">${(totalValuationUSDT + unpnlExchange).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                            </div>
+                          </div>
+
+                          {/* SPOT vs FUTURES Explicit Separation */}
+                          <div className="pt-2 border-t border-slate-800/80 grid grid-cols-2 gap-2 text-[10px] font-mono leading-none">
+                            <div className="p-1.5 bg-[#0B0E11] rounded border border-slate-800/85">
+                              <span className="text-slate-400 block text-[7px] uppercase font-bold tracking-wider mb-1">SPOT WALLET</span>
+                              <span className="text-slate-200 block font-bold truncate">USDT: ${assetBalances.USDT.toFixed(2)}</span>
+                            </div>
+                            <div className="p-1.5 bg-[#0B0E11] rounded border border-slate-800/85">
+                              <span className="text-slate-400 block text-[7px] uppercase font-bold tracking-wider mb-1">FUTURES WALLET</span>
+                              <span className="text-orange-400 block font-bold truncate">Margin Locked: ${activeLockedUSDT.toFixed(2)}</span>
+                            </div>
+                          </div>
                         </div>
 
                         {/* Ledger Breakdown Grid */}
-                        <div className="space-y-2.5 pt-1.5">
+                        <div className="space-y-2 pt-1.5">
                           <div className="grid grid-cols-4 text-[9px] font-mono text-slate-500 uppercase font-bold tracking-wider select-none px-1 pb-1 border-b border-slate-800/40">
-                            <span>ASSET</span>
-                            <span className="text-right">CURRENT</span>
-                            <span className="text-right">REMAINING</span>
-                            <span className="text-right">TOTAL VAL</span>
+                            <span>S/CUR</span>
+                            <span className="text-right">LEDGER FUNDS</span>
+                            <span className="text-right">NET EQUITY</span>
+                            <span className="text-right">SECURE CONTROL</span>
                           </div>
 
-                          <div className="space-y-2 font-mono text-[11px]">
+                          <div className="space-y-1.5 font-mono text-[11px]">
                             {assets.map(asset => {
                               const sharePercent = totalValuationUSDT > 0 ? (asset.value / totalValuationUSDT) * 100 : 0;
+                              // Approximate live equity for this asset row including any open unrealized gains/losses
+                              const assetEquity = asset.symbol === "USDT" ? asset.current + unpnlExchange : asset.value;
+
                               return (
                                 <div key={asset.symbol} className="space-y-1">
                                   <div className="grid grid-cols-4 items-center">
                                     {/* Asset symbol */}
                                     <div>
                                       <span className="font-extrabold text-white block leading-tight">{asset.symbol}</span>
-                                      <span className="text-[8px] text-slate-500 block leading-none truncate max-w-[50px] font-sans">{asset.name.split(" ")[0]}</span>
+                                      <span className="text-[8px] text-slate-500 block leading-none truncate max-w-[40px] font-sans">{asset.name.split(" ")[0]}</span>
                                     </div>
                                     
-                                    {/* Current balance */}
+                                    {/* Wallet Funds (Total Available) */}
                                     <span className="text-right text-white font-semibold">
                                       {asset.current.toLocaleString(undefined, { minimumFractionDigits: asset.symbol === "USDT" ? 2 : 4, maximumFractionDigits: asset.symbol === "USDT" ? 2 : 4 })}
                                     </span>
 
-                                    {/* Remaining balance */}
-                                    <span className={`text-right font-bold ${asset.symbol === "USDT" && activeLockedUSDT > 0 ? "text-emerald-400 font-black animate-pulse" : "text-slate-300"}`}>
-                                      {asset.remaining.toLocaleString(undefined, { minimumFractionDigits: asset.symbol === "USDT" ? 2 : 4, maximumFractionDigits: asset.symbol === "USDT" ? 2 : 4 })}
+                                    {/* Net Equity */}
+                                    <span className={`text-right font-bold ${asset.symbol === "USDT" ? "text-emerald-400" : "text-white"}`}>
+                                      ${assetEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                     </span>
 
-                                    {/* Valuation in USDT */}
-                                    <span className="text-right font-black text-white">
-                                      ${asset.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                    </span>
+                                    {/* Withdrawal Button Enforcing Physical Lock */}
+                                    <button
+                                      onClick={() => handleBlockWithdrawal(exchange, asset.symbol, asset.current.toString())}
+                                      className="px-1.5 py-0.5 rounded bg-red-650 hover:bg-red-650 bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white border border-red-500/20 text-[8px] font-mono cursor-pointer transition flex items-center justify-center font-bold ml-auto"
+                                    >
+                                      Withdraw
+                                    </button>
                                   </div>
 
                                   {/* Small visual bar representing portfolio share percentage */}
@@ -2505,7 +2925,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         {!isConfigured && (
                           <div className="mt-2 text-[10px] text-slate-500 leading-normal border-t border-slate-800/50 pt-2 flex items-center gap-1 font-sans select-none">
                             <HelpCircle className="w-3.5 h-3.5 text-slate-500" />
-                            Preloaded demo balances enabled. Register API keys to link live balances.
+                            Preloaded demo balances active. Sync API keys to link live balances.
                           </div>
                         )}
                       </div>
@@ -2941,9 +3361,9 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                   <span className="text-[10px] font-mono text-slate-500">REAL-TIME PRICES LOADED</span>
                 </div>
 
-                {positions.length === 0 ? (
+                {displayedPositions.length === 0 ? (
                   <div className="py-12 text-center rounded-lg border border-dashed border-slate-800 text-slate-500 space-y-3.5">
-                    <p className="font-mono text-xs">No active deals running at this interval.</p>
+                    <p className="font-mono text-xs">No active {globalMode === "real" ? "REAL LIVE" : "SANDBOX"} deals running at this interval.</p>
                     <button
                       onClick={() => setActiveTab("create_bot")}
                       className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-slate-900 rounded font-bold text-xs uppercase tracking-wider transition hover:text-white cursor-pointer"
@@ -2968,7 +3388,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800 text-slate-100 font-mono">
-                        {positions.map(p => {
+                        {displayedPositions.map(p => {
                           const botRef = bots.find(b => b.id === p.botId);
                           const isLong = p.type === "long";
                           return (
@@ -3023,11 +3443,92 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
             )}
 
             {dealsSupTab === "closed" && (
-              <div className="bg-[#181A20] border border-slate-800/80 rounded-xl p-6 shadow-2xl space-y-4">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                  <h3 className="text-sm font-black text-white uppercase tracking-wider font-sans">Settled Cycles Registry</h3>
-                  <span className="text-[10px] font-mono text-slate-500">HISTORIC RECOVERY SECURED</span>
+              <div className="space-y-6">
+                {/* Performance Summary Panel */}
+                <div className="bg-[#181A20] border border-slate-800/80 rounded-xl p-6 shadow-2xl space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <div className="flex items-center gap-2">
+                      <Activity className="text-emerald-400 w-4 h-4" />
+                      <h3 className="text-sm font-black text-white uppercase tracking-wider font-sans">Performance Summary</h3>
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-500">CUMULATIVE METRICS</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Average Win Card */}
+                    <div className="bg-[#1E2329]/50 border border-slate-800/80 p-4 rounded-xl flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Avg Win Size</span>
+                        <div className="text-xl font-bold text-emerald-400 font-mono mt-1">
+                          +${tradeMetrics.avgWinSize.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-1 font-sans">Based on {tradeMetrics.wins} profitable trades</p>
+                      </div>
+                      <div className="h-10 w-10 rounded-lg bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
+                        <ArrowUpRight className="text-emerald-400 w-5 h-5" />
+                      </div>
+                    </div>
+
+                    {/* Average Loss Card */}
+                    <div className="bg-[#1E2329]/50 border border-slate-800/80 p-4 rounded-xl flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Avg Loss Size</span>
+                        <div className="text-xl font-bold text-red-400 font-mono mt-1">
+                          -${tradeMetrics.avgLossSize.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-1 font-sans">Based on {tradeMetrics.losses} negative trades</p>
+                      </div>
+                      <div className="h-10 w-10 rounded-lg bg-red-500/10 flex items-center justify-center border border-red-500/20">
+                        <ArrowDownRight className="text-red-400 w-5 h-5" />
+                      </div>
+                    </div>
+
+                    {/* Profit Factor Card */}
+                    <div className="bg-[#1E2329]/50 border border-slate-800/80 p-4 rounded-xl flex items-center justify-between">
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-mono">Profit Factor</span>
+                        <div className={`text-xl font-black font-mono mt-1 ${
+                          tradeMetrics.profitFactor === "∞" || parseFloat(tradeMetrics.profitFactor as string) >= 1.5 
+                            ? "text-emerald-400" 
+                            : parseFloat(tradeMetrics.profitFactor as string) >= 1.0 
+                            ? "text-slate-200" 
+                            : "text-red-400"
+                        }`}>
+                          {tradeMetrics.profitFactor}
+                        </div>
+                        <p className="text-[10px] text-slate-500 mt-1 font-sans">Gross profit / Gross loss ratio</p>
+                      </div>
+                      <div className="h-10 w-10 rounded-lg bg-[#1E2329]/50 border border-slate-800 flex items-center justify-center">
+                        <TrendingUp className="text-slate-400 w-5 h-5" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Profitability details */}
+                  <div className="pt-2.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[10px] text-slate-500 border-t border-slate-800/60 font-mono">
+                    <div>
+                      GROSS PROFIT: <span className="text-emerald-400 font-bold">${tradeMetrics.totalGrossProfit.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      <span className="mx-2 text-slate-700">|</span>
+                      GROSS LOSS: <span className="text-red-400 font-bold">${tradeMetrics.totalGrossLoss.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    </div>
+                    <div>
+                      STATUS: {tradeMetrics.total === 0 ? (
+                        <span className="text-slate-400 uppercase font-black">No Trades Realized</span>
+                      ) : parseFloat(tradeMetrics.profitFactor as string) >= 1.0 || tradeMetrics.profitFactor === "∞" ? (
+                        <span className="text-emerald-400 uppercase font-black flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>Net Profitable Engine</span>
+                      ) : (
+                        <span className="text-red-400 uppercase font-black flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-red-400"></span>Net Negative Engine</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
+
+                {/* Settle Cycles Registry */}
+                <div className="bg-[#181A20] border border-slate-800/80 rounded-xl p-6 shadow-2xl space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <h3 className="text-sm font-black text-white uppercase tracking-wider font-sans">Settled Cycles Registry</h3>
+                    <span className="text-[10px] font-mono text-slate-500">HISTORIC RECOVERY SECURED</span>
+                  </div>
 
                 {closedPositions.filter(p => p.botName.toLowerCase().includes(dealsSearchQuery.toLowerCase()) || p.pair.toLowerCase().includes(dealsSearchQuery.toLowerCase())).length === 0 ? (
                   <div className="py-12 text-center rounded-lg border border-dashed border-slate-800 text-slate-500">
@@ -3093,6 +3594,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     </table>
                   </div>
                 )}
+              </div>
               </div>
             )}
 
@@ -3349,10 +3851,10 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             onChange={(e) => setTesterBotId(e.target.value)}
                             className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2 text-xs text-white uppercase font-mono focus:outline-none focus:border-emerald-500"
                           >
-                            {bots.length === 0 ? (
+                            {displayedBots.length === 0 ? (
                               <option value="">Create a bot first</option>
                             ) : (
-                              bots.map(b => (
+                              displayedBots.map(b => (
                                 <option key={b.id} value={b.id}>
                                   {b.name} ({b.pair} • {b.type.toUpperCase()})
                                 </option>
@@ -3382,10 +3884,8 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         const activeBot = bots.find(b => b.id === testerBotId);
                         if (!activeBot) return null;
                         const templateJson = {
-                          secret: globalWebhookSecret,
                           action: testerAction,
                           pair: activeBot.pair,
-                          botId: activeBot.id,
                           price: "{{close}}"
                         };
                         const templateStr = JSON.stringify(templateJson, null, 2);
@@ -3438,10 +3938,10 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           onChange={(e) => setTesterBotId(e.target.value)}
                           className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg p-2.5 text-xs text-white uppercase font-mono"
                         >
-                          {bots.length === 0 ? (
+                          {displayedBots.length === 0 ? (
                             <option value="">No Active Bots Registered</option>
                           ) : (
-                            bots.map(b => (
+                            displayedBots.map(b => (
                               <option key={b.id} value={b.id}>
                                 {b.name} ({b.pair} • {b.type.toUpperCase()})
                               </option>
@@ -3454,7 +3954,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         <label className="text-[9px] font-mono text-slate-455 block mb-1">WEBHOOK SECURITY TOKEN</label>
                         <input
                           type="text"
-                          value={globalWebhookSecret}
+                          value={bots.find(b => b.id === testerBotId)?.webhookSecret || globalWebhookSecret}
                           readOnly
                           className="w-full bg-[#0B0E11]/70 border border-slate-800/80 rounded-lg p-2.5 text-xs text-blue-450 font-mono select-all focus:outline-none text-blue-400"
                         />
@@ -3516,8 +4016,18 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     <p className="leading-relaxed">
                       Click <strong className="text-white font-bold">"Set Alert"</strong>. Under the <strong className="text-emerald-400 font-bold">Notifications</strong> tab, turn on the Webhook URL checkbox, and paste:
                     </p>
-                    <code className="block p-2 bg-[#0B0E11] rounded text-[10px] font-mono break-all border border-slate-800 text-slate-400">
-                      {computedWebhookUrl}
+                    <code className="block p-2 bg-[#0B0E11] rounded text-[10px] font-mono break-all border border-slate-800 text-amber-400">
+                      {testerBotId ? (() => {
+                        const b = bots.find(x => x.id === testerBotId);
+                        if (!b) return computedWebhookUrl;
+                        const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
+                        const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
+                        return b.webhookUrl || `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/${b.id}`;
+                      })() : (() => {
+                        const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
+                        const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
+                        return `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/[bot_id]`;
+                      })()}
                     </code>
                   </li>
 

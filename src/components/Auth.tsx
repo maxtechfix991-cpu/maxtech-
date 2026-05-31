@@ -74,16 +74,18 @@ export default function Auth({ onAuthSuccess }: AuthProps) {
     try {
       if (isRegister) {
         const profile = await dbService.registerUser(email, password);
-        setSuccessMsg(`Registration complete! Your secure Backup Recovery code is: ${profile.recoveryPhrase}. Write this down now to reset your password if needed.`);
-        setIsRegister(false);
-        setPassword("");
-        setVerifyPassword("");
+        // Automatically log the user in instantly for a super frictionless signup flow
+        onAuthSuccess(profile);
       } else {
         const profile = await dbService.loginUser(email, password);
         onAuthSuccess(profile);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || "An error occurred during authentication.");
+      let msg = err.message || "An error occurred during authentication.";
+      if (msg.startsWith("UNVERIFIED:")) {
+        msg = msg.replace("UNVERIFIED:", "");
+      }
+      setErrorMsg(msg);
     } finally {
       setLoading(false);
     }
