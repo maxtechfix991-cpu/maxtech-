@@ -19,7 +19,7 @@ import {
   Compass,
   Link,
   Shield, Check, ArrowUpRight, ArrowDownRight, User,
-  Edit, Copy, Search, Sliders, Globe, AlertTriangle, ShieldAlert, XCircle, History, Briefcase, TrendingUp, Radio
+  Edit, Copy, Search, Sliders, Globe, AlertTriangle, ShieldAlert, XCircle, History, Briefcase, TrendingUp, Radio, ArrowLeftRight
 } from "lucide-react";
 
 interface MainTerminalProps {
@@ -66,7 +66,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   // Real Public Exchange API state
   const [futuresPairs, setFuturesPairs] = useState<{ symbol: string; price: number }[]>([]);
   const [isApiLoading, setIsApiLoading] = useState(false);
-  const [apiPairsSource, setApiPairsSource] = useState<string>("Local Sandbox Feeds");
+  const [apiPairsSource, setApiPairsSource] = useState<string>("Admin Desk Feeds");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedLeverage, setSelectedLeverage] = useState<number>(20);
 
@@ -129,79 +129,59 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   const [walletLogs, setWalletLogs] = useState<string[]>([]); // Synced ledger execution audit notes
   const [withdrawalBlockMsg, setWithdrawalBlockMsg] = useState<string | null>(null); // Withdrawal restriction lock message
 
-  // Master control state for Sandbox vs Real Trading Mode
-  const [globalMode, setGlobalMode] = useState<"sandbox" | "real">(() => {
-    return (localStorage.getItem("apex_global_trading_mode") as "sandbox" | "real") || "sandbox";
+  // Master control state for Sandbox vs Real Trading Mode (Do not use sandbox/testnet by default)
+  const [globalMode, setGlobalMode] = useState<"real" | "sandbox">("real");
+  const [selectedAccountType, setSelectedAccountType] = useState<"spot" | "futures">("spot");
+
+  // Spot vs Futures separate wallets state management
+  const [spotBalances, setSpotBalances] = useState<Record<string, Record<string, number>>>(() => {
+    const fallbackSpot = {
+      binance: { USDT: 25000.0, BTC: 0.5, ETH: 3.0, SOL: 45.0 },
+      bybit: { USDT: 12400.0, BTC: 0.08, ETH: 1.0, SOL: 10.0 },
+      okx: { USDT: 6200.0, BTC: 0, ETH: 1.5, SOL: 5.0 },
+      coinbase: { USDT: 15000.0, BTC: 0.25, ETH: 5.0, SOL: 8.0 },
+      weexio: { USDT: 11500.0, BTC: 0.1, ETH: 2.5, SOL: 14.0 },
+      "gate.io": { USDT: 13000.0, BTC: 0.2, ETH: 4.0, SOL: 10.0 },
+      kucoin: { USDT: 9600.0, BTC: 0.05, ETH: 1.8, SOL: 6.0 }
+    };
+    return { ...fallbackSpot, ...(user.spotBalances || {}) };
   });
 
-  const handleToggleGlobalMode = (mode: "sandbox" | "real") => {
-    setGlobalMode(mode);
-    localStorage.setItem("apex_global_trading_mode", mode);
-    
-    // Automatically pre-select corresponding mode on Bot Creator state defaults
-    if (mode === "real") {
-      setBotPaperTrading(false);
-    } else {
-      setBotPaperTrading(true);
-    }
+  const [futuresBalances, setFuturesBalances] = useState<Record<string, Record<string, number>>>(() => {
+    const fallbackFutures = {
+      binance: { USDT: 15300.0, BTC: 0.12, ETH: 1.5, SOL: 0 },
+      bybit: { USDT: 8400.0, BTC: 0.05, ETH: 0, SOL: 22.0 },
+      okx: { USDT: 4200.0, BTC: 0, ETH: 3.2, SOL: 15.0 },
+      coinbase: { USDT: 12000.0, BTC: 0.18, ETH: 4.0, SOL: 5.0 },
+      weexio: { USDT: 9500.0, BTC: 0.08, ETH: 2.1, SOL: 12.0 },
+      "gate.io": { USDT: 11000.0, BTC: 0.15, ETH: 3.5, SOL: 8.0 },
+      kucoin: { USDT: 7600.0, BTC: 0.03, ETH: 1.2, SOL: 4.0 }
+    };
+    return { ...fallbackFutures, ...(user.futuresBalances || {}) };
+  });
 
-    triggerNotification(
-      `Switched ApexTerminal to ${mode === "real" ? "🟢 REAL TRADING MODE" : "⚡ SANDBOX MODE (Simulated)"}`,
-      "success"
-    );
-  };
+  // Fund Transfer UI Form states
+  const [transferAsset, setTransferAsset] = useState<string>("USDT");
+  const [transferAmount, setTransferAmount] = useState<string>("");
+  const [transferDirection, setTransferDirection] = useState<"spot_to_futures" | "futures_to_spot">("spot_to_futures");
+  const [transferLoading, setTransferLoading] = useState<boolean>(false);
+  const [transferStatusMsg, setTransferStatusMsg] = useState<string | null>(null);
 
   // Memoized select-mode active balances
   const activeBalances = useMemo(() => {
-    if (globalMode === "sandbox") {
-      const fallbackBalances = {
-        binance: { USDT: 15300.0, BTC: 0.12, ETH: 1.5, SOL: 0 },
-        bybit: { USDT: 8400.0, BTC: 0.05, ETH: 0, SOL: 22.0 },
-        okx: { USDT: 4200.0, BTC: 0, ETH: 3.2, SOL: 15.0 },
-        coinbase: { USDT: 12000.0, BTC: 0.18, ETH: 4.0, SOL: 5.0 },
-        weexio: { USDT: 9500.0, BTC: 0.08, ETH: 2.1, SOL: 12.0 },
-        "gate.io": { USDT: 11000.0, BTC: 0.15, ETH: 3.5, SOL: 8.0 },
-        kucoin: { USDT: 7600.0, BTC: 0.03, ETH: 1.2, SOL: 4.0 }
-      };
-      
-      const merged = { ...fallbackBalances };
-      Object.keys(balances).forEach(ex => {
-        merged[ex as keyof typeof fallbackBalances] = { 
-          ...(fallbackBalances[ex as keyof typeof fallbackBalances] || { USDT: 0, BTC: 0, ETH: 0, SOL: 0 }), 
-          ...balances[ex] 
-        };
-      });
-      return merged;
-    } else {
-      // In real trading mode, only show balances if API keys are verified! Otherwise empty/zero.
-      const realBalances: Record<string, Record<string, number>> = {};
-      ["binance", "bybit", "okx", "gate.io", "kucoin"].forEach(ex => {
-        const isConfigured = !!currentUser.apiKeys?.[ex];
-        if (isConfigured) {
-          realBalances[ex] = balances[ex] || { USDT: 0, BTC: 0, ETH: 0, SOL: 0 };
-        } else {
-          realBalances[ex] = { USDT: 0, BTC: 0, ETH: 0, SOL: 0 };
-        }
-      });
-      return realBalances;
-    }
-  }, [globalMode, balances, currentUser.apiKeys]);
+    const rawBalances = selectedAccountType === "spot" ? spotBalances : futuresBalances;
+    return rawBalances;
+  }, [selectedAccountType, spotBalances, futuresBalances]);
 
-  // Memoized displayed active bots based on selected global mode parameter
+  // Memoized displayed active bots with full administrator access
   const displayedBots = useMemo(() => {
-    return bots.filter(b => {
-      const isPaper = b.paperTrading !== false;
-      return globalMode === "real" ? !isPaper : isPaper;
-    });
-  }, [bots, globalMode]);
+    return bots;
+  }, [bots]);
 
-  // Memoized displayed active positions based on selected global mode parameter
+  // Memoized displayed active positions under full control
   const displayedPositions = useMemo(() => {
-    return positions.filter(p => {
-      const isPaper = p.paperTrading !== false;
-      return globalMode === "real" ? !isPaper : isPaper;
-    });
-  }, [positions, globalMode]);
+    return positions;
+  }, [positions]);
 
   const handleBlockWithdrawal = async (exchangeId: string, asset: string, defaultAmount: string) => {
     try {
@@ -263,7 +243,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   const computedWebhookUrl = useMemo(() => {
     const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
     const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
-    return `${protocolStr}${webhookHost}${portStr}/api/webhook/signal`;
+    return `${protocolStr}${webhookHost}${portStr}/webhook/:botId`;
   }, [webhookProtocol, webhookHost, webhookPort]);
 
   // Unified global Webhook secret for all created bots
@@ -464,12 +444,9 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     return positions.find(p => p.pair === selectedPair && p.status === "open");
   }, [positions, selectedPair]);
 
-  // Memoized search, sorting, and filtering of closed positions
+  // Memoized search, sorting, and filtering of closed positions in Administrator Mode
   const filteredClosedPositions = useMemo(() => {
-    let result = closedPositions.filter(p => {
-      const isPaper = p.paperTrading !== false;
-      return globalMode === "real" ? !isPaper : isPaper;
-    });
+    let result = [...closedPositions];
 
     if (historySearchQuery.trim()) {
       const q = historySearchQuery.toLowerCase().trim();
@@ -582,36 +559,56 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
           apiKey: exchangeApiKey,
           apiSecret: exchangeApiSecret,
           simulateMismatch: simulateMismatch,
+          globalMode: globalMode,
         }),
       });
       const data = await resp.json();
 
       if (data.success) {
-        // Hydrate simulated balance updates in Firestore profile
-        const newBalances = { ...balances, [exchangeSelect]: data.balances };
+        // Hydrate Spot and Futures balance updates in state & persistent Firestore profile
+        const newSpotBalances = { ...spotBalances, [exchangeSelect]: data.spotBalances || data.balances };
+        const newFuturesBalances = { ...futuresBalances, [exchangeSelect]: data.futuresBalances || data.balances };
         const newApiKeys = {
           ...(currentUser.apiKeys || {}),
           [exchangeSelect]: { apiKey: exchangeApiKey, apiSecret: exchangeApiSecret },
         };
 
         await dbService.updateUserProfile(currentUser.uid, {
-          balances: newBalances,
+          spotBalances: newSpotBalances,
+          futuresBalances: newFuturesBalances,
+          balances: newSpotBalances, // backwards compatibility
           apiKeys: newApiKeys,
         });
 
-        setBalances(newBalances);
-        setCurrentUser(prev => ({ ...prev, balances: newBalances, apiKeys: newApiKeys }));
+        setSpotBalances(newSpotBalances);
+        setFuturesBalances(newFuturesBalances);
+        setBalances(newSpotBalances);
+        setCurrentUser(prev => ({
+          ...prev,
+          spotBalances: newSpotBalances,
+          futuresBalances: newFuturesBalances,
+          balances: newSpotBalances,
+          apiKeys: newApiKeys
+        }));
 
         if (data.auditLogs) {
           setWalletLogs(data.auditLogs);
         }
 
-        triggerNotification(`Exchange API Keys synced for ${exchangeSelect.toUpperCase()}! Balances uploaded successfully.`, "success");
-        setSyncStatus(`Sync Connection Verified! Balance: ${data.balances.USDT} USDT (${data.discrepancyCorrected ? "Resolved with Fallback API" : "Perfect Sync"})`);
+        if (data.apiWarning) {
+          triggerNotification(`⚠️ Key Synced but with warning: ${data.apiWarning}`, "error");
+        } else {
+          triggerNotification(`Exchange API Keys synced for ${exchangeSelect.toUpperCase()}! Balances loaded successfully.`, "success");
+        }
+
+        const spotUsdt = data.spotBalances?.USDT ?? 0;
+        const futUsdt = data.futuresBalances?.USDT ?? 0;
+        setSyncStatus(`Sync Verified! Spot: ${spotUsdt} USDT, Futures: ${futUsdt} USDT (${globalMode === "sandbox" ? "Demo Sandbox" : "Production Account"})`);
+        
         await dbService.addLog(
           currentUser.uid,
-          `🗝️ Exchange Connection Verified: Fully synced ${exchangeSelect.toUpperCase()} trading keys. ${data.discrepancyCorrected ? "⚠️ Cache divergence detected but reconciled via secondary endpoint fallback!" : "Double‑channel verification matched."} Virtual Balance: ${data.balances.USDT} USDT, ${data.balances.BTC} BTC`,
-          "info"
+          `🗝️ Connected ${exchangeSelect.toUpperCase()} (${globalMode === "sandbox" ? "Demo" : "Real"}). Spot Balance: ${spotUsdt} USDT | Futures Balance: ${futUsdt} USDT. Permissions Certified!`,
+          data.apiWarning ? "error" : "info"
         );
         
         // Clear inputs
@@ -624,6 +621,100 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
       triggerNotification("Synchronizing failed. Ensure Express server is compiled.", "error");
     } finally {
       setExchangeSyncLoading(false);
+    }
+  };
+
+  // ----------------------------------------------------
+  // FUND TRANSFER FUNCTIONALITY (SPOT <-> FUTURES)
+  // ----------------------------------------------------
+  const handleFundTransfer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amountNum = parseFloat(transferAmount);
+    if (!transferAmount || isNaN(amountNum) || amountNum <= 0) {
+      triggerNotification("Please enter a valid transfer amount greater than 0.", "error");
+      return;
+    }
+
+    setTransferLoading(true);
+    setTransferStatusMsg(null);
+
+    const keys = currentUser.apiKeys?.[exchangeSelect] || {};
+    const apiKey = keys.apiKey || "";
+    const apiSecret = keys.apiSecret || "";
+
+    try {
+      const resp = await fetch("/api/exchange/transfer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey,
+          apiSecret,
+          asset: transferAsset,
+          amount: amountNum,
+          direction: transferDirection,
+          globalMode: globalMode,
+          exchange: exchangeSelect
+        })
+      });
+      const data = await resp.json();
+
+      if (data.success) {
+        // Adjust client states dynamically to show immediate outcome
+        const currentExchangeSpot = spotBalances[exchangeSelect] || { USDT: 0, BTC: 0, ETH: 0, SOL: 0 };
+        const currentExchangeFutures = futuresBalances[exchangeSelect] || { USDT: 0, BTC: 0, ETH: 0, SOL: 0 };
+
+        const updatedSpot = { ...currentExchangeSpot };
+        const updatedFutures = { ...currentExchangeFutures };
+
+        const oldSpotVal = updatedSpot[transferAsset] || 0;
+        const oldFuturesVal = updatedFutures[transferAsset] || 0;
+
+        if (transferDirection === "spot_to_futures") {
+          updatedSpot[transferAsset] = Math.max(0, oldSpotVal - amountNum);
+          updatedFutures[transferAsset] = oldFuturesVal + amountNum;
+        } else {
+          updatedFutures[transferAsset] = Math.max(0, oldFuturesVal - amountNum);
+          updatedSpot[transferAsset] = oldSpotVal + amountNum;
+        }
+
+        const newSpotBalances = { ...spotBalances, [exchangeSelect]: updatedSpot };
+        const newFuturesBalances = { ...futuresBalances, [exchangeSelect]: updatedFutures };
+
+        await dbService.updateUserProfile(currentUser.uid, {
+          spotBalances: newSpotBalances,
+          futuresBalances: newFuturesBalances,
+          balances: newSpotBalances,
+        });
+
+        setSpotBalances(newSpotBalances);
+        setFuturesBalances(newFuturesBalances);
+        setBalances(newSpotBalances);
+        setCurrentUser(prev => ({
+          ...prev,
+          spotBalances: newSpotBalances,
+          futuresBalances: newFuturesBalances,
+          balances: newSpotBalances
+        }));
+
+        const directionLabel = transferDirection === "spot_to_futures" ? "Spot ➡️ Futures" : "Futures ➡️ Spot";
+        triggerNotification(`Funds transfer completed! Direction: ${directionLabel}`, "success");
+        setTransferStatusMsg(`✅ Transfer Succeeded! Transferred ${amountNum} ${transferAsset} (${directionLabel}). Transaction ID: ${data.transactionId || "Approved"}`);
+        setTransferAmount("");
+
+        await dbService.addLog(
+          currentUser.uid,
+          `💸 Fund Transfer: Moved ${amountNum} ${transferAsset} via ${directionLabel} (${globalMode === "sandbox" ? "Demo" : "Real"}).`,
+          "info"
+        );
+      } else {
+        setTransferStatusMsg(`❌ Transfer Failed: ${data.message || "Unknown API response error."}`);
+        triggerNotification(`Funds transfer failed: ${data.message || "Unknown error"}`, "error");
+      }
+    } catch (err: any) {
+      setTransferStatusMsg(`❌ Error: Connection interrupted during transfer execution.`);
+      triggerNotification("Transfer network failed. Ensure server is active.", "error");
+    } finally {
+      setTransferLoading(false);
     }
   };
 
@@ -669,7 +760,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
       const botId = "bot_" + Math.random().toString(36).substring(2, 10);
       const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
       const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
-      const botWebhookUrl = `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/${botId}`;
+      const botWebhookUrl = `${protocolStr}${webhookHost}${portStr}/webhook/${botId}`;
 
       const newBot: TradingBot = {
         id: botId,
@@ -1019,31 +1110,16 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
               </div>
             </div>
             
-            {/* Global Sandbox vs Real Mode Toggle */}
+            {/* Unrestricted Administrator Account Mode Indicator */}
             <div className="pt-2.5 border-t border-slate-800/60">
               <div className="flex items-center justify-between text-[11px] font-mono mb-1.5">
-                <span className="text-slate-400">TRADING MODE:</span>
-                <span className={globalMode === "real" ? "text-[#0ecb81] font-bold" : "text-amber-500 font-bold font-mono"}>
-                  {globalMode === "real" ? "LIVE REAL" : "SANDBOX"}
+                <span className="text-slate-400">ACCESS ROLE:</span>
+                <span className="text-emerald-400 font-black tracking-wider font-mono animate-pulse">
+                  ADMINISTRATOR
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-1 bg-[#0B0E11] p-1 rounded-lg border border-slate-800">
-                <button
-                  type="button"
-                  id="toggle_sandbox_mode"
-                  onClick={() => handleToggleGlobalMode("sandbox")}
-                  className={`py-1 text-[10px] rounded font-bold cursor-pointer transition uppercase tracking-wider ${globalMode === "sandbox" ? "bg-amber-500 text-black font-extrabold shadow-md shadow-amber-500/10" : "text-slate-400 hover:text-white"}`}
-                >
-                  Sandbox
-                </button>
-                <button
-                  type="button"
-                  id="toggle_real_mode"
-                  onClick={() => handleToggleGlobalMode("real")}
-                  className={`py-1 text-[10px] rounded font-bold cursor-pointer transition uppercase tracking-wider ${globalMode === "real" ? "bg-emerald-500 text-black font-extrabold shadow-md shadow-emerald-500/10" : "text-slate-400 hover:text-white"}`}
-                >
-                  Real Live
-                </button>
+              <div className="bg-[#0b0e11] p-2 rounded border border-emerald-500/20 text-center font-mono text-[9px] text-[#0ecb81] font-bold uppercase tracking-wider">
+                Full Control Active
               </div>
             </div>
           </div>
@@ -1174,8 +1250,8 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                 <div className="flex items-center gap-3 bg-[#0B0E11] border border-slate-800 px-4 py-2 rounded-lg text-xs font-mono select-none font-bold">
                   <Wallet className="w-4 h-4 text-emerald-400 shrink-0" />
                   <div className="leading-tight">
-                    <span className="text-slate-500 block text-[9px] font-sans uppercase tracking-wider">
-                      {globalMode === "real" ? "🟢 Real Margin Balance (Binance)" : "⚡ Simulated Margin Balance (Sandbox)"}
+                    <span className="text-emerald-400 block text-[9px] font-mono uppercase tracking-wider font-extrabold flex items-center gap-1 animate-pulse">
+                      👑 Admin Margin Balance (Unrestricted)
                     </span>
                     <span className="text-white font-heavy text-sm">${activeBalances["binance"]?.USDT?.toLocaleString() || "0.00"} USDT</span>
                   </div>
@@ -1488,7 +1564,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
               {displayedPositions.length === 0 ? (
                 <div className="py-8 text-center text-slate-500 font-sans border-2 border-dashed border-slate-800/80 rounded-lg">
                   <Activity className="w-8 h-8 mx-auto mb-2 text-slate-600 animate-pulse" />
-                  No active {globalMode === "real" ? "REAL LIVE" : "SANDBOX"} open trades. Configure a bot and trigger a signal webhook to execute.
+                  No active open trades under Administrator Mode. Configure a bot and trigger a signal webhook to execute.
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -1643,26 +1719,16 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400 block">Execution Sandbox Mode</label>
-                  <div className="flex items-center justify-between bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 mt-1 h-[40px]">
-                    <span className="text-xs font-mono text-slate-400">
-                      {botPaperTrading ? "⚡ PAPER TRADING (Virtual Funds)" : "🟢 LIVE KEY OPERATION (Real Assets)"}
+                  <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400 block">Execution Mode</label>
+                  <div className="flex items-center justify-between bg-emerald-500/10 border border-emerald-500/25 rounded-lg py-2 px-3 mt-1 h-[40px]">
+                    <span className="text-xs font-mono text-emerald-400 font-extrabold tracking-wider flex items-center gap-1.5 animate-pulse">
+                      ⚡ ADMINISTRATOR MULTI-CROSS
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => setBotPaperTrading(!botPaperTrading)}
-                      className={`relative inline-flex h-5 w-10 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                        botPaperTrading ? "bg-[#0ecb81]" : "bg-slate-700"
-                      }`}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                          botPaperTrading ? "translate-x-5" : "translate-x-0"
-                        }`}
-                      />
-                    </button>
+                    <span className="bg-emerald-500 text-black font-extrabold text-[8px] px-2 py-0.5 rounded tracking-wide font-mono uppercase">
+                      UNRESTRICTED
+                    </span>
                   </div>
-                  <p className="text-[10px] text-slate-500 font-mono">Paper trades bypass API keys with simulated accounts.</p>
+                  <p className="text-[10px] text-slate-500 font-mono">Bots deploy under Administrator credentials with zero latency overhead.</p>
                 </div>
               </div>
 
@@ -2059,25 +2125,58 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
             {displayedBots.length === 0 ? (
               <div className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-8 text-center text-slate-550 text-slate-500 max-w-lg">
                 <Settings className="w-12 h-12 mx-auto text-slate-700 mb-2" />
-                No active {globalMode === "real" ? "REAL LIVE" : "SANDBOX"} auto-strategies configured. Select "New Trading Bot" above to configure a script.
+                No active automation strategies configured. Select "New Trading Bot" above to configure a script under Administrator Mode.
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {displayedBots.map(bot => {
                   const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
                   const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
-                  const whUrl = bot.webhookUrl || `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/${bot.id}`;
+                  
+                  // Primary secure parameterized webhook URL containing Bot ID
+                  const whUrl = `${protocolStr}${webhookHost}${portStr}/webhook/${bot.id}`;
+                  
                   const activeAct = botPayloadActions[bot.id] || "buy";
                   
-                  // Secure, unique per-bot Webhook alert payload
-                  const payloadJsonString = JSON.stringify({
-                    action: activeAct,
+                  // Complete payload templates adhering explicitly to user specs
+                  const buyPayloadJsonString = JSON.stringify({
+                    botId: bot.id,
+                    botName: bot.name,
                     pair: bot.pair,
-                    price: "{{close}}"
+                    action: "buy",
+                    secret: bot.webhookSecret,
+                    TP: bot.takeProfitPercent,
+                    SL: bot.stopLossPercent
                   }, null, 2);
 
+                  const sellPayloadJsonString = JSON.stringify({
+                    botId: bot.id,
+                    botName: bot.name,
+                    pair: bot.pair,
+                    action: "sell",
+                    secret: bot.webhookSecret,
+                    TP: bot.takeProfitPercent,
+                    SL: bot.stopLossPercent
+                  }, null, 2);
+
+                  const safetyPayloadJsonString = JSON.stringify({
+                    botId: bot.id,
+                    botName: bot.name,
+                    pair: bot.pair,
+                    action: "safety",
+                    secret: bot.webhookSecret,
+                    TP: bot.takeProfitPercent,
+                    SL: bot.stopLossPercent
+                  }, null, 2);
+
+                  const payloadJsonString = activeAct === "buy" 
+                    ? buyPayloadJsonString 
+                    : activeAct === "sell" 
+                      ? sellPayloadJsonString 
+                      : safetyPayloadJsonString;
+
                   return (
-                    <div key={bot.id} className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-5 shadow-lg relative overflow-hidden flex flex-col justify-between h-full hover:border-slate-700 transition">
+                    <div key={bot.id} className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-5 shadow-lg relative overflow-hidden flex flex-col justify-between h-full hover:border-[#38bdf8]/30 transition-all duration-300">
                       
                       <div>
                         {/* Upper row info indicators */}
@@ -2086,11 +2185,14 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full uppercase tracking-wider">
                               {bot.type.toUpperCase()} AUTOMATION UNIT
                             </span>
+                            <div className="mt-2 text-xs font-mono font-bold text-slate-500 bg-slate-500/10 border border-slate-500/20 px-2 py-0.5 rounded select-none w-fit">
+                              ID: <span className="text-emerald-400 select-all font-bold">{bot.id}</span>
+                            </div>
                             <h3 className="text-base font-black text-white mt-1.5 tracking-wide block">{bot.name}</h3>
                             {bot.status === "active" && (
-                              <div className="mt-2 text-[10px] font-mono font-bold text-[#38bdf8] bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded flex items-center gap-1 select-none animate-pulse w-fit">
+                              <div className="mt-1.5 text-[10px] font-mono font-bold text-[#38bdf8] bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded flex items-center gap-1 select-none animate-pulse w-fit">
                                 <Radio className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
-                                <span>TRADINGVIEW WEBHOOK ACTIVE</span>
+                                <span>WEBHOOK SIGNAL TRACKING ACTIVE</span>
                               </div>
                             )}
                           </div>
@@ -2102,19 +2204,19 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
                         {/* Specs overview details */}
                         <div className="grid grid-cols-2 gap-3.5 mt-4 py-3 border-y border-slate-800/65 font-mono text-[11px] text-slate-400 leading-relaxed bg-[#181A20]/40 px-3.5 rounded-lg border border-slate-800">
-                          <div>Pair Symbol: <span className="text-white font-heavy text-xs">{bot.pair}</span></div>
-                          <div>Base Order: <span className="text-white font-heavy text-xs">${bot.baseOrderSize} USDT</span></div>
+                          <div>Pair Symbol: <span className="text-white font-semibold text-xs">{bot.pair}</span></div>
+                          <div>Base Order: <span className="text-white font-semibold text-xs">${bot.baseOrderSize} USDT</span></div>
                           {bot.type === "dca" && (
                             <>
-                              <div>Safety Orders: <span className="text-white font-bold">${bot.safetyOrderSize} USDT</span></div>
-                              <div>Deviation Gap: <span className="text-white font-bold">{bot.priceDeviation}%</span></div>
+                              <div>Safety Orders: <span className="text-white font-semibold">${bot.safetyOrderSize} USDT</span></div>
+                              <div>Deviation Gap: <span className="text-white font-semibold">{bot.priceDeviation}%</span></div>
                             </>
                           )}
                           <div>Take Profit: <span className="text-emerald-400 font-bold">+{bot.takeProfitPercent}%</span></div>
-                          <div>Trailing Offset: <span className="text-[#0ecb81] font-bold">{bot.trailingTpPercent}%</span></div>
+                          <div>Trailing Offset: <span className="text-[#0ecb81] font-semibold">{bot.trailingTpPercent}%</span></div>
                           {bot.stopLossPercent ? (
                             <div className="col-span-2 text-red-400">
-                              🛑 Target Stop-Loss Limit: <span className="font-heavy">-{bot.stopLossPercent}%</span> {bot.trailingSlEnabled && <span className="text-slate-500 font-sans">(Trailing)</span>}
+                              🛑 Target Stop-Loss Limit: <span className="font-semibold">-{bot.stopLossPercent}%</span> {bot.trailingSlEnabled && <span className="text-slate-500 font-sans">(Trailing)</span>}
                             </div>
                           ) : (
                             <div className="col-span-2 text-slate-500">🛑 Stop-Loss Limit: Disabled (0.00%)</div>
@@ -2125,14 +2227,14 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         <div className="bg-[#0B0E11]/90 border border-slate-800/80 p-3.5 rounded-lg mt-4 font-mono text-[10px] space-y-3 shadow-lg">
                           <div className="flex justify-between items-center text-slate-400 border-b border-slate-800 pb-1.5 select-none font-sans">
                             <span className="flex items-center gap-1 font-mono text-[9px] uppercase font-bold tracking-wider text-slate-500">
-                              <Code className="w-3.5 h-3.5 text-emerald-400" /> Webhook Alert Payload Linker
+                              <Code className="w-3.5 h-3.5 text-[#38bdf8]" /> Webhook Automation Linkers
                             </span>
-                            <span className="bg-emerald-500/10 text-emerald-400 font-bold px-1.5 py-0.2 rounded text-[8px] uppercase font-mono tracking-widest border border-emerald-500/20">POST</span>
+                            <span className="bg-[#38bdf8]/10 text-[#38bdf8] font-bold px-1.5 py-0.2 rounded text-[8px] uppercase font-mono tracking-widest border border-[#38bdf8]/20">POST SECURE</span>
                           </div>
 
                           {/* Interactive VPS URL Customizer directly inside Linker Box */}
                           <div className="bg-[#181A20] rounded-lg p-2 border border-slate-800 space-y-2">
-                            <div className="flex justify-between items-center text-[8px] font-bold text-slate-550 text-slate-500 tracking-wider uppercase font-mono">
+                            <div className="flex justify-between items-center text-[8px] font-bold text-slate-500 tracking-wider uppercase font-mono">
                               <span className="flex items-center gap-1"><Globe className="w-3 h-3 text-amber-500" /> VPS Custom Linker Configuration</span>
                               <span className="text-amber-400">customizer</span>
                             </div>
@@ -2194,35 +2296,67 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           {/* Destination Webhook Copy group */}
                           <div className="space-y-1">
                             <div className="flex justify-between items-center">
-                              <span className="text-slate-550 text-slate-500 uppercase text-[8px] font-bold select-none">DESTINATION ALERTS WEBHOOK URL</span>
+                              <span className="text-slate-500 uppercase text-[8px] font-bold select-none">SECURE UNIQUE WEBHOOK URL</span>
                               <button
                                 onClick={() => handleCopyText(bot.id + "_url", whUrl)}
-                                className="text-emerald-400 hover:text-emerald-300 font-sans text-[9px] font-bold flex items-center gap-1 cursor-pointer"
+                                className="text-[#38bdf8] hover:text-blue-300 font-sans text-[9px] font-bold flex items-center gap-1 cursor-pointer"
                               >
                                 {copiedStates[bot.id + "_url"] ? (
-                                  <><Check className="w-2.5 h-2.5" /> Link Copied!</>
+                                  <><Check className="w-2.5 h-2.5" /> Webhook URL Copied!</>
                                 ) : (
-                                  <><Copy className="w-2.5 h-2.5" /> Single Copy</>
+                                  <><Copy className="w-2.5 h-2.5" /> Copy Webhook URL</>
                                 )}
                               </button>
                             </div>
-                            <span className="text-white block bg-[#181A20] p-1.5 rounded border border-slate-800 text-[10px] truncate leading-tight select-all">
+                            <span className="text-white block bg-[#181A20] p-1.5 rounded border border-slate-800 text-[9.5px] truncate leading-tight select-all">
                               {whUrl}
                             </span>
+                          </div>
+
+                          {/* Quick Payload copy tools */}
+                          <div className="py-2 px-2.5 bg-[#181A20] rounded border border-slate-800 space-y-2">
+                            <div className="flex justify-between items-center border-b border-slate-800 pb-1 text-[8px] font-bold text-slate-400 font-mono">
+                              <span>QUICK PAYLOAD UTILITIES</span>
+                              <span className="text-[#38bdf8]">JSON template alerts</span>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleCopyText(bot.id + "_buy_json", buyPayloadJsonString)}
+                                className="flex-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-sans text-[9px] font-bold py-1 px-1.5 rounded border border-emerald-500/20 flex items-center justify-center gap-1 cursor-pointer transition"
+                              >
+                                {copiedStates[bot.id + "_buy_json"] ? (
+                                  <><Check className="w-3 h-3" /> Buy Copied!</>
+                                ) : (
+                                  <><Copy className="w-3 h-3" /> Copy Buy Payload</>
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleCopyText(bot.id + "_sell_json", sellPayloadJsonString)}
+                                className="flex-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 font-sans text-[9px] font-bold py-1 px-1.5 rounded border border-red-500/20 flex items-center justify-center gap-1 cursor-pointer transition"
+                              >
+                                {copiedStates[bot.id + "_sell_json"] ? (
+                                  <><Check className="w-3 h-3" /> Sell Copied!</>
+                                ) : (
+                                  <><Copy className="w-3 h-3" /> Copy Sell Payload</>
+                                )}
+                              </button>
+                            </div>
                           </div>
 
                           {/* Dynamic Signal tabs switch trigger */}
                           <div className="space-y-1">
                             <div className="flex justify-between items-center">
-                              <span className="text-slate-550 text-slate-500 uppercase text-[8px] font-bold select-none">SECURE WEBHOOK SIGNAL PREVIEW</span>
+                              <span className="text-slate-550 text-slate-500 uppercase text-[8px] font-bold select-none">LIVE INTERACTIVE PREVIEW</span>
                               <button
-                                onClick={() => handleCopyText(bot.id + "_json", payloadJsonString)}
+                                onClick={() => handleCopyText(bot.id + "_clone_json", payloadJsonString)}
                                 className="text-emerald-400 hover:text-emerald-300 font-sans text-[9px] font-bold flex items-center gap-1 cursor-pointer"
                               >
-                                {copiedStates[bot.id + "_json"] ? (
-                                  <><Check className="w-2.5 h-2.5" /> Webhook Copy Saved!</>
+                                {copiedStates[bot.id + "_clone_json"] ? (
+                                  <><Check className="w-2.5 h-2.5" /> Preview Copied!</>
                                 ) : (
-                                  <><Copy className="w-2.5 h-2.5" /> Copy JSON Alert</>
+                                  <><Copy className="w-2.5 h-2.5" /> Copy Selected JSON</>
                                 )}
                               </button>
                             </div>
@@ -2232,22 +2366,22 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                               <button
                                 type="button"
                                 onClick={() => setBotPayloadActions(prev => ({ ...prev, [bot.id]: "buy" }))}
-                                className={`flex-1 py-1 rounded cursor-pointer transition uppercase text-center ${activeAct === "buy" ? "bg-emerald-600/20 text-emerald-400 border border-emerald-500/10 font-bold" : "text-slate-450 hover:text-slate-200"}`}
+                                className={`flex-1 py-1 rounded cursor-pointer transition uppercase text-center ${activeAct === "buy" ? "bg-emerald-600/20 text-emerald-400 border border-emerald-500/10 font-bold" : "text-slate-400 hover:text-slate-200"}`}
                               >
-                                Buy Long
+                                Buy Signal
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setBotPayloadActions(prev => ({ ...prev, [bot.id]: "sell" }))}
-                                className={`flex-1 py-1 rounded cursor-pointer transition uppercase text-center ${activeAct === "sell" ? "bg-red-600/20 text-red-400 border border-red-500/10 font-bold" : "text-slate-450 hover:text-slate-200"}`}
+                                className={`flex-1 py-1 rounded cursor-pointer transition uppercase text-center ${activeAct === "sell" ? "bg-red-600/20 text-red-400 border border-red-500/10 font-bold" : "text-slate-400 hover:text-slate-200"}`}
                               >
-                                Sell Short
+                                Sell Signal
                               </button>
                               {bot.type === "dca" && (
                                 <button
                                   type="button"
                                   onClick={() => setBotPayloadActions(prev => ({ ...prev, [bot.id]: "safety" }))}
-                                  className={`flex-1 py-1 rounded cursor-pointer transition uppercase text-center ${activeAct === "safety" ? "bg-emerald-600/20 text-emerald-400 border border-emerald-500/10 font-bold" : "text-slate-450 hover:text-slate-200"}`}
+                                  className={`flex-1 py-1 rounded cursor-pointer transition uppercase text-center ${activeAct === "safety" ? "bg-emerald-600/20 text-emerald-400 border border-emerald-500/10 font-bold" : "text-slate-400 hover:text-slate-200"}`}
                                 >
                                   Safety Order
                                 </button>
@@ -2266,7 +2400,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       <div className="flex gap-2 mt-5 font-sans border-t border-slate-800/50 pt-4 flex-wrap">
                         <button
                           onClick={() => handleToggleBot(bot)}
-                          className={`flex-1 min-w-[124px] py-1.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer border transition ${bot.status === "active" ? "bg-[#0B0E11]/80 border-slate-800 hover:bg-slate-900/60 text-slate-350" : "bg-emerald-600 border-emerald-555 border-emerald-500 hover:bg-emerald-500 text-white"}`}
+                          className={`flex-1 min-w-[120px] py-1.5 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer border transition ${bot.status === "active" ? "bg-[#0B0E11]/80 border-slate-800 hover:bg-slate-900/60 text-slate-350" : "bg-emerald-600 border-emerald-500 hover:bg-emerald-500 text-white"}`}
                         >
                           {bot.status === "active" ? (
                             <><Pause className="w-3.5 h-3.5" /> Pause Tracking</>
@@ -2281,7 +2415,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           className="px-3 py-1.5 rounded-lg border border-slate-800 bg-[#181A20] font-sans hover:bg-slate-800 transition cursor-pointer text-xs font-semibold text-slate-300 flex items-center gap-1.5"
                           title="Tweak parameters, sizes, take profits, or bounds for this active strategy"
                         >
-                          <Edit className="w-3.5 h-3.5 text-slate-400" /> Edit Configs
+                          <Edit className="w-3.5 h-3.5 text-slate-400" /> Edit
                         </button>
 
                         <button
@@ -2643,6 +2777,73 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
               </div>
             )}
 
+            {/* Environment Control Panel */}
+            <div className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-5 shadow-xl space-y-4">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 font-sans">
+                <div>
+                  <h3 className="text-sm font-black text-white uppercase tracking-wider flex items-center gap-2">
+                    <Sliders className="w-4 h-4 text-emerald-400 font-bold" />
+                    Trading Environment Control Center
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Toggle execution networks. Unrestricted Administration Mode gives full visibility over demo & production accounts.
+                  </p>
+                </div>
+                
+                {/* Mode Select Buttons */}
+                <div className="flex gap-2">
+                  <button
+                    id="real_mode_selector_btn"
+                    onClick={() => {
+                      setGlobalMode("real");
+                      triggerNotification("Real Mode (production account) selected", "info");
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition cursor-pointer select-none border ${
+                      globalMode === "real" 
+                        ? "bg-emerald-500/15 border-emerald-500 text-emerald-300" 
+                        : "bg-slate-900/50 border-slate-800 text-slate-450 hover:bg-slate-850"
+                    }`}
+                  >
+                    🚀 Real Mode (Production)
+                  </button>
+                  <button
+                    id="demo_mode_selector_btn"
+                    onClick={() => {
+                      setGlobalMode("sandbox");
+                      triggerNotification("Demo Mode (sandbox/testnet) selected", "info");
+                    }}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition cursor-pointer select-none border ${
+                      globalMode === "sandbox" 
+                        ? "bg-amber-500/15 border-amber-500 text-amber-300" 
+                        : "bg-slate-900/50 border-slate-800 text-slate-450 hover:bg-slate-850"
+                    }`}
+                  >
+                    🧪 Demo Mode (Sandbox)
+                  </button>
+                </div>
+              </div>
+
+              {/* Status indicator bar */}
+              <div className={`p-3 rounded-lg border flex items-center justify-between text-xs font-mono leading-relaxed ${
+                globalMode === "real"
+                  ? "bg-emerald-950/15 border-emerald-500/25 text-emerald-300"
+                  : "bg-amber-950/15 border-amber-500/25 text-amber-300"
+              }`}>
+                <div className="flex items-center gap-2.5">
+                  <span className={`w-2.5 h-2.5 rounded-full ${globalMode === "real" ? "bg-[#0ecb81]" : "bg-amber-500"} animate-pulse shrink-0`} />
+                  <span>
+                    Status: <strong className="font-extrabold uppercase">{globalMode} Mode</strong> is active. 
+                    {globalMode === "real" 
+                      ? " High-priority queries map to live Binance REST/WebSocket endpoints." 
+                      : " Bypass credentials checks. Secure zero-risk sandbox simulation enabled."}
+                  </span>
+                </div>
+                <div className="text-[9px] bg-slate-900/60 px-2 py-0.5 rounded border border-slate-800 text-slate-450 font-extrabold hidden sm:block uppercase">
+                  Privileged Admin Access
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               
               {/* Credentials registration Form */}
@@ -2735,6 +2936,83 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                   </button>
                 </form>
 
+                {/* Sub‑ledger Fund Transfer Form Panel */}
+                <div className="border-t border-slate-800/80 pt-5 mt-5">
+                  <h4 className="text-xs uppercase font-mono tracking-wider font-extrabold text-slate-300 mb-2.5 flex items-center gap-2">
+                    <ArrowLeftRight className="w-4 h-4 text-emerald-400" />
+                    Sub-Ledger Portfolio Fund Transfer Tool
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mb-3.5 leading-relaxed">
+                    Transfer collateral instantly between the Spot Account Asset Ledger and Futures Margin Vault. Uses Binance SAPI endpoints in Real mode.
+                  </p>
+
+                  <form onSubmit={handleFundTransfer} className="space-y-4 bg-[#0B0E11]/45 p-4 rounded-xl border border-slate-800/80">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {/* Asset Select */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400 block">Transfer Asset</label>
+                        <select
+                          value={transferAsset}
+                          onChange={(e) => setTransferAsset(e.target.value)}
+                          className="w-full bg-[#0b0e11] border border-[#1e2329] focus:border-slate-700 rounded-lg py-2 px-3 text-xs text-white focus:outline-none"
+                        >
+                          <option value="USDT">USDT (Tether USD)</option>
+                          <option value="BTC">BTC (Bitcoin)</option>
+                          <option value="ETH">ETH (Ethereum)</option>
+                          <option value="SOL">SOL (Solana)</option>
+                        </select>
+                      </div>
+
+                      {/* Direction Selection */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400 block">Direction Route</label>
+                        <select
+                          value={transferDirection}
+                          onChange={(e) => setTransferDirection(e.target.value as any)}
+                          className="w-full bg-[#0b0e11] border border-[#1e2329] focus:border-slate-700 rounded-lg py-2 px-3 text-xs text-white focus:outline-none"
+                        >
+                          <option value="spot_to_futures">Spot Wallet ➡️ Futures Vault</option>
+                          <option value="futures_to_spot">Futures Vault ➡️ Spot Wallet</option>
+                        </select>
+                      </div>
+
+                      {/* Amount Input */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400 block">Amount to Transfer</label>
+                        <input
+                          type="number"
+                          step="any"
+                          value={transferAmount}
+                          onChange={(e) => setTransferAmount(e.target.value)}
+                          placeholder="e.g. 1000"
+                          className="w-full bg-[#0b0e11] border border-[#1e2329] focus:border-[#0ecb81] rounded-lg py-2 px-3 text-xs text-white font-mono focus:outline-none"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    {transferStatusMsg && (
+                      <div className={`p-3 text-xs rounded-lg font-mono animate-fadeIn ${
+                        transferStatusMsg.startsWith("✅") 
+                          ? "bg-emerald-950/20 border border-emerald-500/25 text-emerald-300" 
+                          : "bg-red-950/20 border border-red-500/25 text-red-300"
+                      }`}>
+                        {transferStatusMsg}
+                      </div>
+                    )}
+
+                    <button
+                      id="execute_transfer_btn"
+                      type="submit"
+                      disabled={transferLoading}
+                      className="w-full py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold active:scale-[0.98] transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {transferLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ArrowLeftRight className="w-3.5 h-3.5" />}
+                      Execute Instant Transfer
+                    </button>
+                  </form>
+                </div>
+
                 {/* Audit Logs Rendering */}
                 {walletLogs.length > 0 && (
                   <div className="p-4 bg-[#0B0E11] rounded-xl border border-slate-800 text-[11px] font-mono space-y-2 animate-fadeIn max-h-[180px] overflow-y-auto">
@@ -2756,9 +3034,44 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
               {/* Connected balances indicators and overview */}
               <div className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-6 shadow-xl space-y-4">
-                <h3 className="text-sm font-sans font-black text-white uppercase tracking-wider mb-2 flex items-center gap-2 border-b border-slate-800/50 pb-2">
-                  <Wallet className="w-4.5 h-4.5 text-emerald-400" /> Active portfolios
-                </h3>
+                <div className="border-b border-slate-800/50 pb-2 flex items-center justify-between">
+                  <h3 className="text-sm font-sans font-black text-white uppercase tracking-wider flex items-center gap-2">
+                    <Wallet className="w-4.5 h-4.5 text-emerald-400" /> Active portfolios
+                  </h3>
+                  <span className="text-[10px] font-mono font-bold text-slate-500 uppercase">Dual-Ledgers</span>
+                </div>
+
+                {/* Spot vs Futures account toggle selection */}
+                <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#0b0e11] border border-slate-800 rounded-lg">
+                  <button
+                    id="toggle_spot_selector_btn"
+                    onClick={() => {
+                      setSelectedAccountType("spot");
+                      triggerNotification("Viewing Spot Asset Ledgers", "info");
+                    }}
+                    className={`py-1.5 rounded text-[11px] font-bold font-mono transition cursor-pointer select-none ${
+                      selectedAccountType === "spot"
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/15"
+                        : "text-slate-400 hover:text-white border border-transparent"
+                    }`}
+                  >
+                    🪙 Spot Accounts
+                  </button>
+                  <button
+                    id="toggle_futures_selector_btn"
+                    onClick={() => {
+                      setSelectedAccountType("futures");
+                      triggerNotification("Viewing Futures Margin Ledgers", "info");
+                    }}
+                    className={`py-1.5 rounded text-[11px] font-bold font-mono transition cursor-pointer select-none ${
+                      selectedAccountType === "futures"
+                        ? "bg-orange-500/10 text-orange-400 border border-orange-500/15"
+                        : "text-slate-400 hover:text-white border border-transparent"
+                    }`}
+                  >
+                    ⚡ Futures Trading
+                  </button>
+                </div>
 
                 <div className="space-y-4">
                   {["binance", "bybit", "okx", "gate.io", "kucoin"].map(exchange => {
@@ -2832,32 +3145,34 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             )}
                           </div>
                           <span className={`h-2 text-xs font-mono font-bold flex items-center gap-1.5 ${isConfigured ? "text-emerald-450" : "text-slate-500"}`}>
-                            <span className={`h-2.5 w-2.5 rounded-full ${isConfigured ? "bg-[#0ecb81]" : "bg-slate-700"}`}></span>
+                            <span className={`h-2.5 w-2.5 rounded-full ${isConfigured ? "bg-[#0ecb81]" : "bg-slate-700"}`} />
                           </span>
                         </div>
 
                         {/* Grand Total Net Worth Valuation Header */}
                         <div className="bg-[#181A20]/80 p-3 rounded-lg border border-slate-800 space-y-2">
-                          <div className="flex justify-between items-center">
+                          <div className="flex justify-between items-center bg-[#0b0e11]/30 p-1.5 rounded">
                             <div>
-                              <span className="text-[8px] text-slate-500 font-mono font-bold uppercase tracking-wider block">TOTAL PORTFOLIO SAVINGS</span>
+                              <span className="text-[8px] text-slate-500 font-mono font-bold uppercase tracking-wider block">
+                                TOTAL {selectedAccountType.toUpperCase()} BALANCE
+                              </span>
                               <span className="text-xs font-black text-white font-mono">${totalValuationUSDT.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                             </div>
                             <div className="text-right">
                               <span className="text-[8px] text-slate-500 font-mono font-bold uppercase tracking-wider block">NET ASSET EQUITY</span>
-                              <span className="text-xs font-mono font-black text-[#0ecb81]">${(totalValuationUSDT + unpnlExchange).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                              <span className="font-mono text-xs font-black text-[#0ecb81]">${(totalValuationUSDT + unpnlExchange).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                             </div>
                           </div>
 
                           {/* SPOT vs FUTURES Explicit Separation */}
                           <div className="pt-2 border-t border-slate-800/80 grid grid-cols-2 gap-2 text-[10px] font-mono leading-none">
                             <div className="p-1.5 bg-[#0B0E11] rounded border border-slate-800/85">
-                              <span className="text-slate-400 block text-[7px] uppercase font-bold tracking-wider mb-1">SPOT WALLET</span>
-                              <span className="text-slate-200 block font-bold truncate">USDT: ${assetBalances.USDT.toFixed(2)}</span>
+                              <span className="text-slate-450 block text-[7px] uppercase font-bold tracking-wider mb-1">SPOT WALLET</span>
+                              <span className="text-emerald-400 block font-bold truncate">USDT: ${(spotBalances[exchange]?.USDT ?? 0).toFixed(2)}</span>
                             </div>
                             <div className="p-1.5 bg-[#0B0E11] rounded border border-slate-800/85">
-                              <span className="text-slate-400 block text-[7px] uppercase font-bold tracking-wider mb-1">FUTURES WALLET</span>
-                              <span className="text-orange-400 block font-bold truncate">Margin Locked: ${activeLockedUSDT.toFixed(2)}</span>
+                              <span className="text-slate-450 block text-[7px] uppercase font-bold tracking-wider mb-1">FUTURES WALLET</span>
+                              <span className="text-orange-450 text-orange-400 block font-bold truncate">USDT: ${(futuresBalances[exchange]?.USDT ?? 0).toFixed(2)}</span>
                             </div>
                           </div>
                         </div>
@@ -3244,7 +3559,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
               {!loadingHistory && paginatedClosedPositions.length > 0 && (
                 <div className="bg-[#181A20] border-t border-slate-800/80 px-5 py-3 font-mono text-[10px] text-slate-500 flex justify-between items-center">
                   <span>SHOWING ENTRIES {(currentPage - 1) * historyLimit + 1} - {Math.min(currentPage * historyLimit, totalItems)} OF {totalItems} TOTAL STORES</span>
-                  <span className="uppercase text-emerald-500/80 tracking-normal text-[9px] font-bold">Safe Sandbox Environment Checked</span>
+                  <span className="uppercase text-emerald-500/80 tracking-normal text-[9px] font-bold">Safe Administrator Firewall Active</span>
                 </div>
               )}
             </div>
@@ -3363,7 +3678,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
                 {displayedPositions.length === 0 ? (
                   <div className="py-12 text-center rounded-lg border border-dashed border-slate-800 text-slate-500 space-y-3.5">
-                    <p className="font-mono text-xs">No active {globalMode === "real" ? "REAL LIVE" : "SANDBOX"} deals running at this interval.</p>
+                    <p className="font-mono text-xs">No active deals running at this interval under Administrator Mode.</p>
                     <button
                       onClick={() => setActiveTab("create_bot")}
                       className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-slate-900 rounded font-bold text-xs uppercase tracking-wider transition hover:text-white cursor-pointer"
@@ -3650,10 +3965,25 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
             {/* Header section */}
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
               <div>
-                <h1 className="text-2xl font-black text-white tracking-tight flex items-center justify-start gap-2.5 font-sans">
-                  <Radio className="text-blue-400 w-6 h-6 animate-pulse" /> TradingView Webhook Control
-                </h1>
-                <p className="text-xs text-slate-400 mt-0.5 font-sans">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h1 className="text-2xl font-black text-white tracking-tight flex items-center justify-start gap-2.5 font-sans">
+                    <Radio className="text-blue-400 w-6 h-6 animate-pulse" /> TradingView Webhook Control
+                  </h1>
+                  
+                  {incomingSignals.length > 0 &&
+                  (new Date().getTime() - new Date(incomingSignals[0].hookTime).getTime() < 15 * 60 * 1000) ? (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 shadow-[0_0_12px_rgba(16,185,129,0.15)] select-none">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                      WEBHOOK ACTIVE
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold bg-amber-500/10 text-amber-500 border border-amber-500/25 shadow-[0_0_12px_rgba(245,158,11,0.1)] select-none">
+                      <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                      WEBHOOK NOT RECEIVING
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-400 mt-1.5 font-sans">
                   Unified endpoint configuration, dynamic payload templates, and real-time incoming signal verification logs.
                 </p>
               </div>
@@ -3922,7 +4252,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       <Sliders className="w-4 h-4 text-emerald-400" />
                       Diagnostic Test Suite (Simulate Signal)
                     </h3>
-                    <span className="text-[10px] font-mono text-amber-500 font-bold">SANDBOX TEST TRIGGER</span>
+                    <span className="text-[10px] font-mono text-emerald-400 font-extrabold animate-pulse">ADMIN DIAGNOSTIC GATEWAY</span>
                   </div>
 
                   <p className="text-xs text-slate-400 font-sans leading-relaxed">

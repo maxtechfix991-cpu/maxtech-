@@ -4,6 +4,8 @@ export interface UserProfile {
   recoveryPhrase: string;
   apiKeys: Record<string, { apiKey: string; apiSecret: string }>;
   balances: Record<string, Record<string, number>>; // exchangeId -> { USDT, BTC, ETH... }
+  spotBalances?: Record<string, Record<string, number>>; // exchangeId -> { USDT, BTC, ETH... }
+  futuresBalances?: Record<string, Record<string, number>>; // exchangeId -> { USDT, BTC, ETH... }
   createdAt: string;
 }
 
@@ -12,6 +14,7 @@ export interface TradingBot {
   userId: string;
   name: string;
   type: "signal" | "dca";
+  marketType?: "spot" | "futures"; // Spot vs Futures trading mode
   status: "active" | "paused";
   pair: string;
   baseOrderSize: number; // in USDT
@@ -42,6 +45,7 @@ export interface Position {
   pair: string;
   type: "long" | "short";
   status: "open" | "closed";
+  marketType?: "spot" | "futures"; // Spot vs Futures market selector
   entryPrice: number;
   currentPrice: number;
   amount: number; // absolute quantity of contracts held
