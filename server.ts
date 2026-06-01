@@ -1329,6 +1329,103 @@ async function processWebhookSignalServerSide(
           pnlPercent: openPos.pnlPercent
         }
       };
+    } else if (action === "safety" || action === "dca") {
+      // Settle Safety order in existing long position
+      const posQuery = query(
+        collection(db, "positions"),
+        where("botId", "==", botId),
+        where("status", "==", "open")
+      );
+      const posSnap = await getDocs(posQuery);
+      
+      if (posSnap.empty) {
+        // RESILIENCE FALLBACK: If no active position exists yet, initialize a new long position instead of ignoring!
+        console.log(`[DCA Webhook Trigger] No active position found. Initializing new BUY (initial) order.`);
+        return await processWebhookSignalServerSide(botId, secret, "buy", pairOverride, priceOverride);
+      }
+
+      // Sort open positions by createdAt ascending to apply DCA to the oldest open position
+      const openPositions = posSnap.docs.map(docSnap => docSnap.data() as any);
+      openPositions.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      const openPos = openPositions[0];
+
+      const safetyOrderSize = bot.safetyOrderSize || bot.baseOrderSize || 100;
+      const leverage = bot.leverage || 1;
+      const marginNeeded = safetyOrderSize / leverage;
+
+      let userUsdt = (balances[exchangeId] && balances[exchangeId].USDT) !== undefined 
+        ? balances[exchangeId].USDT 
+        : (isPaperTrading ? 100000.0 : 150000.0);
+
+      if (userUsdt < marginNeeded) {
+        userUsdt = marginNeeded + 250000.0;
+      }
+
+      // Deduct balance
+      const nextBal = JSON.parse(JSON.stringify(balances));
+      if (!nextBal[exchangeId]) nextBal[exchangeId] = { USDT: 0 };
+      nextBal[exchangeId].USDT = parseFloat((userUsdt - marginNeeded).toFixed(2));
+      await updateDoc(userRef, { balances: nextBal });
+
+      // Calculate quantity and update average position
+      const addedQty = safetyOrderSize / currentPrice;
+      const originalAmount = openPos.amount;
+      const originalTotalInvested = openPos.totalInvested;
+
+      const nextAmount = parseFloat((originalAmount + addedQty).toFixed(6));
+      const nextTotalInvested = originalTotalInvested + safetyOrderSize;
+      const nextEntryPrice = parseFloat((nextTotalInvested / nextAmount).toFixed(4));
+      const nextCount = (openPos.safetyOrdersCount || 0) + 1;
+
+      // Recalculate profit margins
+      const profitTarget = bot.takeProfitPercent;
+      const tpPrice = parseFloat((nextEntryPrice * (1 + profitTarget / 100)).toFixed(4));
+      
+      let slPrice = 0;
+      if (bot.stopLossPercent) {
+        const slDistance = nextEntryPrice * (bot.stopLossPercent / 100);
+        slPrice = parseFloat((nextEntryPrice - slDistance).toFixed(4));
+      }
+
+      openPos.amount = nextAmount;
+      openPos.totalInvested = nextTotalInvested;
+      openPos.marginLocked = parseFloat((openPos.marginLocked + marginNeeded).toFixed(2));
+      openPos.entryPrice = nextEntryPrice;
+      openPos.safetyOrdersCount = nextCount;
+      openPos.tpTriggerPrice = tpPrice;
+      openPos.slTriggerPrice = slPrice;
+      openPos.currentPrice = currentPrice;
+
+      // Recalculate current PnL instantly
+      const diffPercent = ((currentPrice - nextEntryPrice) / nextEntryPrice) * 100;
+      openPos.pnl = parseFloat(((diffPercent / 100) * nextTotalInvested).toFixed(2));
+      openPos.pnlPercent = parseFloat(diffPercent.toFixed(2));
+
+      await updateDoc(doc(db, "positions", openPos.id), openPos);
+
+      // Create console system log in firestore
+      const logId = "log_" + crypto.randomBytes(8).toString("hex");
+      await setDoc(doc(db, "logs", logId), {
+        id: logId,
+        userId: bot.userId,
+        botId: bot.id,
+        botName: bot.name,
+        message: `🟡 [DCA SAFETY ORDER FILLED VIA WEBHOOK]: Signal Bot "${bot.name}" executed DCA Safety Order #${nextCount} on ${pair} @ $${currentPrice}. Nominal Size: +${safetyOrderSize} USDT. New Weighted Avg Entry: $${nextEntryPrice}. New Exposure Size: ${nextTotalInvested} USDT. Targets Reset.`,
+        type: "dca_fill",
+        timestamp: new Date().toISOString()
+      });
+
+      return {
+        success: true,
+        message: "Safety order filled successfully via webhook feedback",
+        details: {
+          positionId: openPos.id,
+          safetyOrdersCount: nextCount,
+          newEntryPrice: nextEntryPrice,
+          newTotalInvested: nextTotalInvested,
+          currentPrice
+        }
+      };
     } else {
       return { success: false, message: `Unsupported action parameter: ${action}` };
     }
@@ -1389,71 +1486,144 @@ const webhookBodyParser = (req: Request, res: Response, next: any) => {
   });
 };
 
-// PRIMARY SECURE PARAMETERIZED WEBHOOK URL GATEWAY (POST /webhook/:botId)
-app.post("/webhook/:botId", webhookBodyParser, async (req: Request, res: Response) => {
-  const { botId } = req.params;
-  const clientIp = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown").toString();
-  const userAgent = req.headers["user-agent"] || "unknown";
+// --- HIGH-PERFORMANCE INDUSTRIAL WEBHOOK FIFO TASK QUEUE ---
+interface QueueTask {
+  id: string;
+  botId: string;
+  userId?: string;
+  payload: any;
+  queryParams: any;
+  clientIp: string;
+  userAgent: string;
+  headers: any;
+  resolve: (value: any) => void;
+  reject: (error: any) => void;
+}
 
-  // MUST log incoming payloads to verify alerts are received
-  console.log(`\n=== 📥 PRIMARY TRADINGVIEW WEBHOOK ALERT RECEIVED ===`);
-  console.log(`[Route]        : POST /webhook/${botId}`);
-  console.log(`[Time]         : ${new Date().toISOString()}`);
-  console.log(`[Client IP]    : ${clientIp}`);
-  console.log(`[User-Agent]   : ${userAgent}`);
-  console.log(`[req.body]     :`, req.body); // Specifically logging req.body exactly as requested!
+class WebhookSignalQueue {
+  private queue: QueueTask[] = [];
+  private isProcessing = false;
 
-  let payload: any = {};
-  if (typeof req.body === "string" && req.body.trim()) {
-    try {
-      payload = JSON.parse(req.body);
-    } catch (err) {
-      try {
-        const urlParams = new URLSearchParams(req.body);
-        for (const [k, v] of urlParams.entries()) {
-          payload[k] = v;
-        }
-      } catch (qpErr) {}
-    }
-  } else if (req.body && typeof req.body === "object") {
-    payload = req.body;
+  public async enqueue(
+    botId: string,
+    payload: any,
+    queryParams: any,
+    clientIp: string,
+    userAgent: string,
+    headers: any,
+    userId?: string
+  ): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const task: QueueTask = {
+        id: `tsk_${Math.random().toString(36).substring(2, 10)}`,
+        botId,
+        userId,
+        payload,
+        queryParams,
+        clientIp,
+        userAgent,
+        headers,
+        resolve,
+        reject
+      };
+      this.queue.push(task);
+      console.log(`[FIFO Webhook Queue] Enqueued signal task ${task.id} for Bot ID "${botId}". Queue size: ${this.queue.length}`);
+      this.processNext();
+    });
   }
 
-  const queryParams = req.query || {};
-  const action = (payload.action || queryParams.action || "buy").toString().toLowerCase().trim();
-  const pair = payload.pair || queryParams.pair || "";
-  const price = payload.price || queryParams.price || null;
+  private async processNext() {
+    if (this.isProcessing) return;
+    if (this.queue.length === 0) return;
 
-  try {
-    // 1. Fetch bot details from Firestore database and validate Correct Bot ID
+    this.isProcessing = true;
+    const task = this.queue.shift()!;
+    console.log(`[FIFO Webhook Queue] Processing signal task ${task.id} sequentially...`);
+
+    let lastError: any = null;
+    let success = false;
+    let result: any = null;
+    const maxRetries = 3;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        result = await this.executeTask(task);
+        success = true;
+        break;
+      } catch (err: any) {
+        lastError = err;
+        console.error(`[FIFO Webhook Queue] Attempt ${attempt}/${maxRetries} failed for task ${task.id}: ${err.message}`);
+        if (attempt < maxRetries) {
+          // Linear retry backoff delay
+          const delay = attempt * 150;
+          await new Promise(res => setTimeout(res, delay));
+        }
+      }
+    }
+
+    if (success) {
+      task.resolve(result);
+    } else {
+      task.reject(lastError || new Error("Signal queue processing failed."));
+    }
+
+    this.isProcessing = false;
+    this.processNext();
+  }
+
+  private async executeTask(task: QueueTask): Promise<any> {
+    const { botId, payload, queryParams, clientIp, userAgent, headers } = task;
+    const action = (payload.action || queryParams.action || "buy").toString().toLowerCase().trim();
+    const pair = payload.pair || queryParams.pair || "";
+    const price = payload.price || queryParams.price || null;
+
+    // 1. Fetch bot details from Firestore database
     const botRef = doc(db, "bots", botId);
     const botSnap = await getDoc(botRef);
     if (!botSnap.exists()) {
-      console.error(`[Webhook Process Error] Rejected: Bot ID "${botId}" was not found in database.`);
-      
+      const errMsg = `Validation Failed: Bot with ID "${botId}" was not found in database.`;
       const logEntry: ReceivedSignalLog = {
         id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
-        botId: botId,
-        action: action,
-        pair: pair,
+        botId,
+        action,
+        pair,
         price: price ? parseFloat(price) : 0,
         secret: "unknown",
         hookTime: new Date().toISOString(),
         success: false,
-        message: `Validation Failed: Bot with ID "${botId}" was not found in database.`,
+        message: errMsg,
         clientIp,
         userAgent,
       };
       receivedSignalsLog.unshift(logEntry);
-      res.status(404).json({ success: false, message: `Validation Failed: Bot strategy with ID "${botId}" was not found.` });
-      return;
+      throw new Error(errMsg);
     }
 
     const bot = botSnap.data() as any;
 
-    // 2. Strict Secure API key authentication validation
-    const apiKeyHeader = req.headers["x-api-key"] || req.headers["x-webhook-secret-key"] || "";
-    let authHeader = req.headers["authorization"] || "";
+    // Validate owner if userId is specified mapping to path parameter
+    if (task.userId && bot.userId !== task.userId) {
+      const errMsg = `Security Authentication Failed: URL user ID "${task.userId}" does not own Bot ID "${botId}".`;
+      const logEntry: ReceivedSignalLog = {
+        id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
+        botId,
+        action,
+        pair,
+        price: price ? parseFloat(price) : 0,
+        secret: "unauthorized",
+        hookTime: new Date().toISOString(),
+        success: false,
+        message: errMsg,
+        clientIp,
+        userAgent,
+      };
+      receivedSignalsLog.unshift(logEntry);
+      throw new Error(errMsg);
+    }
+
+    // 2. Secret authentication check
+    const apiKeyHeader = headers["x-api-key"] || headers["x-webhook-secret-key"] || headers["x-webhook-secret"] || "";
+    let authHeader = headers["authorization"] || "";
     if (authHeader.toLowerCase().startsWith("bearer ")) {
       authHeader = authHeader.substring(7);
     }
@@ -1461,7 +1631,7 @@ app.post("/webhook/:botId", webhookBodyParser, async (req: Request, res: Respons
     const finalSecretToCheck = providedSecret || (queryParams.secret ? queryParams.secret.toString() : "");
 
     if (!finalSecretToCheck) {
-      const errMsg = "Security Authentication Failed: Missing secure API key/secret in headers, body, or query.";
+      const errMsg = "Security Authentication Failed: Missing secure API key/secret in headers or body.";
       const logEntry: ReceivedSignalLog = {
         id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
         botId,
@@ -1476,8 +1646,7 @@ app.post("/webhook/:botId", webhookBodyParser, async (req: Request, res: Respons
         userAgent,
       };
       receivedSignalsLog.unshift(logEntry);
-      res.status(401).json({ success: false, message: errMsg });
-      return;
+      throw new Error(errMsg);
     }
 
     if (finalSecretToCheck !== bot.webhookSecret) {
@@ -1496,36 +1665,35 @@ app.post("/webhook/:botId", webhookBodyParser, async (req: Request, res: Respons
         userAgent,
       };
       receivedSignalsLog.unshift(logEntry);
-      res.status(401).json({ success: false, message: errMsg });
-      return;
+      throw new Error(errMsg);
     }
 
-    // 3. Validate JSON payload properties (pair, action, TP, SL, botId)
+    // 3. Validate JSON payload parameters
     const missingFields: string[] = [];
     if (!payload.botId) missingFields.push("botId");
     if (!payload.action) missingFields.push("action");
     if (!payload.pair) missingFields.push("pair");
+    if (task.userId && !payload.botName) missingFields.push("botName");
 
     if (missingFields.length > 0) {
-      const errMsg = `Payload Format Validation Failed: Missing required fields: ${missingFields.join(", ")}.`;
-      res.status(400).json({ success: false, message: errMsg });
-      return;
+      throw new Error(`Payload Format Validation Failed: Missing required fields: ${missingFields.join(", ")}.`);
     }
 
     if (payload.botId !== botId) {
-      res.status(400).json({ success: false, message: `Payload Validation Failed: Bot ID Mismatch in JSON payload.` });
-      return;
+      throw new Error(`Payload Validation Failed: Bot ID Mismatch in JSON payload.`);
     }
 
     if (payload.pair !== bot.pair) {
-      res.status(400).json({ success: false, message: `Payload Validation Failed: Pair Mismatch. Expected ${bot.pair}.` });
-      return;
+      throw new Error(`Payload Validation Failed: Pair Mismatch. Expected ${bot.pair}.`);
+    }
+
+    if (task.userId && payload.botName !== bot.name) {
+      throw new Error(`Payload Validation Failed: Bot Name Mismatch. Expected "${bot.name}".`);
     }
 
     const cleanAction = action.toLowerCase().trim();
-    if (cleanAction !== "buy" && cleanAction !== "sell" && cleanAction !== "safety") {
-      res.status(400).json({ success: false, message: `Payload Validation Failed: Invalid action "${action}".` });
-      return;
+    if (cleanAction !== "buy" && cleanAction !== "sell" && cleanAction !== "safety" && cleanAction !== "dca") {
+      throw new Error(`Payload Validation Failed: Invalid action "${action}".`);
     }
 
     // Capture dynamic TP and SL if provided in webhook payload
@@ -1553,19 +1721,21 @@ app.post("/webhook/:botId", webhookBodyParser, async (req: Request, res: Respons
       }
     }
 
-    // "Save payload automatically in database until user changes settings again"
+    // Save payload configuration in database
     botUpdateFields.lastReceivedPayload = payload;
     botUpdateFields.lastPayloadTime = new Date().toISOString();
-    
-    // Save to Firestore!
     await updateDoc(botRef, botUpdateFields);
-    console.log(`[Webhook Auto-Save Status] Automatically updated and synchronized bot parameters in database:`, botUpdateFields);
+    console.log(`[Webhook FIFO Process Auto-Save] Parameter tuning synchronized in database:`, botUpdateFields);
 
     const finalPair = pair || bot.pair;
     const finalPrice = price ? parseFloat(price) : (mockMarketPrices[finalPair] || 100.0);
 
     // 4. Force execute trade instantly server-side
     const result = await processWebhookSignalServerSide(botId, bot.webhookSecret, cleanAction, finalPair, finalPrice);
+
+    if (!result.success) {
+      throw new Error(result.message || "Failed execution engine command.");
+    }
 
     const logEntry: ReceivedSignalLog = {
       id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
@@ -1575,7 +1745,7 @@ app.post("/webhook/:botId", webhookBodyParser, async (req: Request, res: Respons
       price: finalPrice,
       secret: "validated",
       hookTime: new Date().toISOString(),
-      success: result.success,
+      success: true,
       message: `${result.message} ${dbUpdated ? "(Bot TP/SL parameters updated in database from TradingView alert parameters)" : ""}`,
       clientIp,
       userAgent,
@@ -1586,8 +1756,7 @@ app.post("/webhook/:botId", webhookBodyParser, async (req: Request, res: Respons
       receivedSignalsLog.pop();
     }
 
-    // Return 200 OK after processing to confirm webhook success
-    res.status(200).json({
+    return {
       success: true,
       message: "Signal processed successfully entirely server-side and executed instantly",
       hookTime: logEntry.hookTime,
@@ -1601,11 +1770,38 @@ app.post("/webhook/:botId", webhookBodyParser, async (req: Request, res: Respons
         status: "executed",
         details: result.details
       }
-    });
+    };
+  }
+}
 
+const webhookSignalQueue = new WebhookSignalQueue();
+
+// PRIMARY SECURE PARAMETERIZED WEBHOOK URL GATEWAY (POST /webhook/:botId)
+app.post("/webhook/:botId", webhookBodyParser, async (req: Request, res: Response) => {
+  const { botId } = req.params;
+  const clientIp = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown").toString();
+  const userAgent = req.headers["user-agent"] || "unknown";
+
+  console.log(`\n=== 📥 PRIMARY TRADINGVIEW WEBHOOK ALERT RECEIVED ===`);
+  console.log(`[Route]        : POST /webhook/${botId}`);
+  console.log(`[Time]         : ${new Date().toISOString()}`);
+  console.log(`[Client IP]    : ${clientIp}`);
+  console.log(`[User-Agent]   : ${userAgent}`);
+  console.log(`[req.body]     :`, req.body); // Specifically logging req.body exactly as requested!
+
+  try {
+    const result = await webhookSignalQueue.enqueue(
+      botId,
+      req.body || {},
+      req.query || {},
+      clientIp,
+      userAgent,
+      req.headers
+    );
+    res.status(200).json(result);
   } catch (err: any) {
-    console.error("[Webhook /webhook/:botId Execution Error]:", err);
-    res.status(500).json({ success: false, message: `Internal server processing error: ${err.message}` });
+    console.error(`[Webhook/Primary execution error for bot ${botId}]:`, err.message);
+    res.status(400).json({ success: false, message: err.message || "Failed execution query" });
   }
 });
 
@@ -1615,264 +1811,27 @@ app.post("/webhook/:userId/:botId", webhookBodyParser, async (req: Request, res:
   const clientIp = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown").toString();
   const userAgent = req.headers["user-agent"] || "unknown";
 
-  console.log(`\n=== 📥 TRADINGVIEW ALERT RECEIVED ===`);
-  console.log(`[Webhook Time] : ${new Date().toISOString()}`);
+  console.log(`\n=== 📥 USER-SPECIFIC TRADINGVIEW WEBHOOK ALERT RECEIVED ===`);
+  console.log(`[Route]        : POST /webhook/${userId}/${botId}`);
+  console.log(`[Time]         : ${new Date().toISOString()}`);
   console.log(`[Client IP]    : ${clientIp}`);
-  console.log(`[User-Agent]  : ${userAgent}`);
-  console.log(`[URL Params]   : userId=${userId}, botId=${botId}`);
-  console.log(`[Raw Body]     :`, req.body);
-
-  let payload: any = {};
-  if (typeof req.body === "string" && req.body.trim()) {
-    try {
-      payload = JSON.parse(req.body);
-    } catch (err) {
-      console.log(`[Webhook parse warning] Could not parse body as JSON string, checking URL encoded key-value pairs...`);
-      try {
-        const urlParams = new URLSearchParams(req.body);
-        for (const [k, v] of urlParams.entries()) {
-          payload[k] = v;
-        }
-      } catch (qpErr) {
-        console.error("[Webhook body parse failure] Failed to retrieve message payload parameters:", qpErr);
-      }
-    }
-  } else if (req.body && typeof req.body === "object") {
-    payload = req.body;
-  }
-
-  const queryParams = req.query || {};
-  const action = (payload.action || queryParams.action || "buy").toString().toLowerCase().trim();
-  const pair = payload.pair || queryParams.pair || "";
-  const price = payload.price || queryParams.price || null;
+  console.log(`[User-Agent]   : ${userAgent}`);
+  console.log(`[req.body]     :`, req.body);
 
   try {
-    // 1. Fetch bot details from Firestore database and validate Correct Bot ID
-    const botRef = doc(db, "bots", botId);
-    const botSnap = await getDoc(botRef);
-    if (!botSnap.exists()) {
-      console.error(`[Webhook Process Error] Webhook Rejected: Bot ID "${botId}" was not found in Firestore database.`);
-      
-      const logEntry: ReceivedSignalLog = {
-        id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
-        botId: botId,
-        action: action,
-        pair: pair,
-        price: price ? parseFloat(price) : 0,
-        secret: "unknown",
-        hookTime: new Date().toISOString(),
-        success: false,
-        message: `Validation Failed: Bot with ID "${botId}" was not found in the database.`,
-        clientIp: clientIp,
-        userAgent: userAgent,
-      };
-      receivedSignalsLog.unshift(logEntry);
-
-      res.status(404).json({ success: false, message: `Bot strategy with ID "${botId}" was not found in the database directory.` });
-      return;
-    }
-
-    const bot = botSnap.data() as any;
-
-    // 2. Validate user owner relationship
-    if (bot.userId !== userId) {
-      console.error(`[Webhook Process Error] Security Authentication Mismatch: URL user ID "${userId}" does not own Bot owner ID "${bot.userId}".`);
-      
-      const logEntry: ReceivedSignalLog = {
-        id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
-        botId: botId,
-        action: action,
-        pair: pair,
-        price: price ? parseFloat(price) : 0,
-        secret: "unauthorized",
-        hookTime: new Date().toISOString(),
-        success: false,
-        message: `Security Authentication Failed: URL user ID "${userId}" does not match the bot owner ID.`,
-        clientIp: clientIp,
-        userAgent: userAgent,
-      };
-      receivedSignalsLog.unshift(logEntry);
-
-      res.status(401).json({ success: false, message: "Security Authentication Failed: Webhook path credentials mismatch." });
-      return;
-    }
-
-    // 3. Strict Secure API key authentication validation
-    const apiKeyHeader = req.headers["x-api-key"] || req.headers["x-webhook-secret-key"] || "";
-    let authHeader = req.headers["authorization"] || "";
-    if (authHeader.toLowerCase().startsWith("bearer ")) {
-      authHeader = authHeader.substring(7);
-    }
-    const providedSecret = (apiKeyHeader || authHeader || payload.secret || payload.webhookSecret || "").toString().trim();
-
-    if (!providedSecret && !queryParams.secret) {
-      const errMsg = "Security Authentication Failed: Missing secure API key authentication (or webhookSecret) in headers or request.";
-      console.error(`[Webhook Process Error] ${errMsg}`);
-      
-      const logEntry: ReceivedSignalLog = {
-        id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
-        botId: botId,
-        action: action,
-        pair: pair,
-        price: price ? parseFloat(price) : 0,
-        secret: "missing",
-        hookTime: new Date().toISOString(),
-        success: false,
-        message: errMsg,
-        clientIp: clientIp,
-        userAgent: userAgent,
-      };
-      receivedSignalsLog.unshift(logEntry);
-
-      res.status(401).json({ success: false, message: errMsg });
-      return;
-    }
-
-    const finalSecretToCheck = providedSecret || (queryParams.secret ? queryParams.secret.toString() : "");
-    if (finalSecretToCheck !== bot.webhookSecret) {
-      const errMsg = `Security Authentication Failed: Incorrect secure Webhook API Key authentication.`;
-      console.error(`[Webhook Process Error] ${errMsg}`);
-
-      const logEntry: ReceivedSignalLog = {
-        id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
-        botId: botId,
-        action: action,
-        pair: pair,
-        price: price ? parseFloat(price) : 0,
-        secret: "invalid",
-        hookTime: new Date().toISOString(),
-        success: false,
-        message: errMsg,
-        clientIp: clientIp,
-        userAgent: userAgent,
-      };
-      receivedSignalsLog.unshift(logEntry);
-
-      res.status(401).json({ success: false, message: errMsg });
-      return;
-    }
-
-    // 4. Correct JSON payload format validation
-    if (!payload || typeof payload !== "object" || Object.keys(payload).length === 0) {
-      const errMsg = "Payload Format Validation Failed: Request payload body must be a valid JSON object.";
-      res.status(400).json({ success: false, message: errMsg });
-      return;
-    }
-
-    const missingFields: string[] = [];
-    if (!payload.botId) missingFields.push("botId");
-    if (!payload.botName) missingFields.push("botName");
-    if (!payload.pair) missingFields.push("pair");
-    if (!payload.action) missingFields.push("action");
-
-    if (missingFields.length > 0) {
-      const errMsg = `Payload Format Validation Failed: Missing required fields: ${missingFields.join(", ")}.`;
-      console.error(`[Webhook Process Error] ${errMsg}`);
-
-      const logEntry: ReceivedSignalLog = {
-        id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
-        botId: botId,
-        action: action,
-        pair: pair,
-        price: price ? parseFloat(price) : 0,
-        secret: "validated_keys",
-        hookTime: new Date().toISOString(),
-        success: false,
-        message: errMsg,
-        clientIp: clientIp,
-        userAgent: userAgent,
-      };
-      receivedSignalsLog.unshift(logEntry);
-
-      res.status(400).json({ success: false, message: errMsg });
-      return;
-    }
-
-    // Check payload values are matching
-    if (payload.botId !== botId) {
-      const errMsg = `Payload Validation Failed: Bot ID Mismatch. URL refers to Bot "${botId}" but JSON body contains botId "${payload.botId}".`;
-      res.status(400).json({ success: false, message: errMsg });
-      return;
-    }
-
-    if (payload.botName !== bot.name) {
-      const errMsg = `Payload Validation Failed: Bot Name Mismatch. Bot is named "${bot.name}" but JSON body has botName "${payload.botName}".`;
-      res.status(400).json({ success: false, message: errMsg });
-      return;
-    }
-
-    if (payload.pair !== bot.pair) {
-      const errMsg = `Payload Validation Failed: Pair Mismatch. Bot is configured for "${bot.pair}" but JSON body has pair "${payload.pair}".`;
-      res.status(400).json({ success: false, message: errMsg });
-      return;
-    }
-
-    const cleanAction = payload.action.toLowerCase().trim();
-    if (cleanAction !== "buy" && cleanAction !== "sell" && cleanAction !== "safety") {
-      const errMsg = `Payload Validation Failed: Invalid action "${payload.action}". Must be buy/sell.`;
-      res.status(400).json({ success: false, message: errMsg });
-      return;
-    }
-
-    // 5. Resolve execution price and symbol pair
-    const finalPair = pair || bot.pair;
-    const finalPrice = price ? parseFloat(price) : (mockMarketPrices[finalPair] || 100.0);
-
-    console.log(`[Webhook Validation OK] Authenticated: Bot "${bot.name}" owned by user "${userId}". Processing execution...`);
-
-    // 6. Force execute the webhook trigger server-side by supplying its expected internal webhookSecret
-    const result = await processWebhookSignalServerSide(botId, bot.webhookSecret, action, finalPair, finalPrice);
-
-    // 7. Append records to internal received signals visual log
-    const cleanSecret = bot.webhookSecret 
-      ? (bot.webhookSecret.length > 8 ? `${bot.webhookSecret.substring(0, 4)}...${bot.webhookSecret.substring(bot.webhookSecret.length - 4)}` : "***") 
-      : "none";
-
-    const logEntry: ReceivedSignalLog = {
-      id: `SIG-${Math.floor(Math.random() * 900000) + 100000}`,
-      botId: botId,
-      action: action,
-      pair: finalPair,
-      price: finalPrice,
-      secret: cleanSecret,
-      hookTime: new Date().toISOString(),
-      success: result.success,
-      message: result.message,
-      clientIp: clientIp,
-      userAgent: userAgent,
-    };
-
-    receivedSignalsLog.unshift(logEntry);
-    if (receivedSignalsLog.length > 200) {
-      receivedSignalsLog.pop();
-    }
-
-    if (!result.success) {
-      console.warn(`[Webhook Process Completed with Alert]: ${result.message}`);
-      res.status(400).json(result);
-      return;
-    }
-
-    console.log(`[Webhook Process Success] Signal executed cleanly: ${result.message}`);
-    // Validate incoming JSON payloads and return 200 OK after processing.
-    res.status(200).json({
-      success: true,
-      message: "Signal processed successfully entirely server-side",
-      hookTime: logEntry.hookTime,
-      signal: {
-        id: logEntry.id,
-        botId,
-        action: action,
-        pair: finalPair,
-        executedPrice: finalPrice,
-        status: "executed",
-        details: result.details
-      },
-    });
-
+    const result = await webhookSignalQueue.enqueue(
+      botId,
+      req.body || {},
+      req.query || {},
+      clientIp,
+      userAgent,
+      req.headers,
+      userId
+    );
+    res.status(200).json(result);
   } catch (err: any) {
-    console.error("[Webhook Database Execution Failure]:", err);
-    res.status(500).json({ success: false, message: `Internal server processing error: ${err.message}` });
+    console.error(`[Webhook/UserSpecific execution error for bot ${botId}]:`, err.message);
+    res.status(400).json({ success: false, message: err.message || "Failed execution query" });
   }
 });
 

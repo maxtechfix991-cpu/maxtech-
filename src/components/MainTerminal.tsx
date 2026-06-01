@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { UserProfile, TradingBot, Position, SystemLog } from "../types";
 import { dbService } from "../utils/db";
 import { INITIAL_PRICES, INITIAL_CHANGES, getUpdatedPrices, tickPositions } from "../utils/tradingEngine";
@@ -88,6 +88,42 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   // Copy indicators state & Webhook Payload Action toggles
   const [copiedStates, setCopiedStates] = useState<Record<string, boolean>>({});
   const [botPayloadActions, setBotPayloadActions] = useState<Record<string, "buy" | "sell" | "safety">>({});
+
+  const lastSignalsCountRef = useRef<number>(0);
+
+  // Audio chime synthesizer for TradingView integration alerts
+  const playAlertBeepSound = () => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      
+      osc1.connect(gainNode);
+      osc2.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      
+      osc1.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc1.type = "sine";
+      
+      osc2.frequency.setValueAtTime(880, ctx.currentTime); // A5
+      osc2.type = "sine";
+      
+      gainNode.gain.setValueAtTime(0.12, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+      
+      osc1.start(ctx.currentTime);
+      osc2.start(ctx.currentTime);
+      
+      osc1.stop(ctx.currentTime + 0.35);
+      osc2.stop(ctx.currentTime + 0.35);
+    } catch (err) {
+      console.warn("Audio Context playback ignored:", err);
+    }
+  };
 
   // UI Navigation states
   const [activeTab, setActiveTab] = useState<"dashboard" | "create_bot" | "bot_list" | "exchanges" | "trade_history" | "deals_terminal" | "tradingview_webhooks">("dashboard");
@@ -379,8 +415,15 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     try {
       const res = await fetch("/api/webhook/signals-log");
       const data = await res.json();
-      if (data.success) {
+      if (data.success && data.signals) {
         setIncomingSignals(data.signals);
+        
+        // Track count to play sound chime on increase
+        if (lastSignalsCountRef.current > 0 && data.signals.length > lastSignalsCountRef.current) {
+          playAlertBeepSound();
+          triggerNotification("New TradingView signal alert received!", "info");
+        }
+        lastSignalsCountRef.current = data.signals.length;
       }
     } catch (e) {
       console.warn("Unable to fetch webhook history from express:", e);
@@ -388,12 +431,11 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   };
 
   useEffect(() => {
-    if (activeTab === "tradingview_webhooks") {
-      loadWebhookHistory();
-      const intervalId = setInterval(loadWebhookHistory, 3000);
-      return () => clearInterval(intervalId);
-    }
-  }, [activeTab]);
+    if (!currentUser || !currentUser.uid) return;
+    loadWebhookHistory();
+    const intervalId = setInterval(loadWebhookHistory, 3500);
+    return () => clearInterval(intervalId);
+  }, [currentUser?.uid]);
 
   // ----------------------------------------------------
   // REAL-TIME PRICE FEED SIMULATOR TICKER
@@ -3850,18 +3892,18 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     <p className="font-mono text-xs">No settled cycles registered for your selection.</p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto rounded-lg border border-slate-800 bg-[#0B0E11]/40">
+                  <div className="max-h-[500px] overflow-y-auto relative rounded-lg border border-slate-800 bg-[#0B0E11]/40 scrollbar-thin">
                     <table className="w-full text-left border-collapse font-sans text-xs select-none">
-                      <thead>
-                        <tr className="bg-[#0B0E11]/90 border-b border-slate-800 uppercase text-slate-400 font-mono tracking-wider text-[10px]">
-                          <th className="py-3 px-4">Settle Time</th>
-                          <th className="py-3 px-4">Bot Strategy</th>
-                          <th className="py-3 px-4">Instrument</th>
-                          <th className="py-3 px-4">Direction</th>
-                          <th className="py-3 px-4 text-right">Average In</th>
-                          <th className="py-3 px-4 text-right">Settle Out</th>
-                          <th className="py-3 px-4">Reason</th>
-                          <th className="py-3 px-4 text-right">ROI % / Profit</th>
+                      <thead className="sticky top-0 z-10 shadow-sm border-b border-slate-800 bg-[#0B0E11]">
+                        <tr className="uppercase text-slate-400 font-mono tracking-wider text-[10px]">
+                          <th className="py-3 px-4 bg-[#0B0E11]">Timestamp</th>
+                          <th className="py-3 px-4 bg-[#0B0E11]">Bot Strategy</th>
+                          <th className="py-3 px-4 bg-[#0B0E11]">Pair</th>
+                          <th className="py-3 px-4 bg-[#0B0E11]">Action</th>
+                          <th className="py-3 px-4 bg-[#0B0E11] text-right">TP Target</th>
+                          <th className="py-3 px-4 bg-[#0B0E11] text-right">SL Target</th>
+                          <th className="py-3 px-4 bg-[#0B0E11]">Reason</th>
+                          <th className="py-3 px-4 bg-[#0B0E11] text-right">Result</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800 text-slate-100 font-mono">
@@ -3869,7 +3911,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           .filter(p => p.botName.toLowerCase().includes(dealsSearchQuery.toLowerCase()) || p.pair.toLowerCase().includes(dealsSearchQuery.toLowerCase()))
                           .map((pos) => {
                             const isWin = pos.pnl > 0;
-                            const settleTime = pos.closedAt ? new Date(pos.closedAt).toLocaleTimeString() : "Unrecorded";
+                            const settleTime = pos.closedAt ? new Date(pos.closedAt).toLocaleString() : "Unrecorded";
                             return (
                               <tr key={pos.id} className="hover:bg-slate-900/40 transition">
                                 <td className="py-3 px-4 text-slate-500 text-[10px]">{settleTime}</td>
@@ -3882,12 +3924,16 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                                     {pos.type.toUpperCase()}
                                   </span>
                                 </td>
-                                <td className="py-3 px-4 text-right text-slate-300">${pos.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })}</td>
-                                <td className="py-3 px-4 text-right text-slate-100">${(pos.currentPrice || pos.entryPrice).toLocaleString(undefined, { minimumFractionDigits: 1 })}</td>
+                                <td className="py-3 px-4 text-right text-emerald-400">
+                                  {pos.tpTriggerPrice ? `$${pos.tpTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })}` : "-"}
+                                </td>
+                                <td className="py-3 px-4 text-right text-red-400">
+                                  {pos.slTriggerPrice ? `$${pos.slTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })}` : "-"}
+                                </td>
                                 <td className="py-3 px-4">
                                   <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                    pos.closeReason === "tp" || pos.closeReason === "trailing_tp" ? "bg-emerald-550/10 text-emerald-400" :
-                                    pos.closeReason === "sl" ? "bg-red-550/10 text-red-400" : "bg-slate-800 text-slate-400"
+                                    pos.closeReason === "tp" || pos.closeReason === "trailing_tp" ? "bg-emerald-555/10 text-emerald-400" :
+                                    pos.closeReason === "sl" ? "bg-red-555/10 text-red-400" : "bg-slate-800 text-slate-400"
                                   }`}>
                                     {pos.closeReason === "trailing_tp" ? "TRAIL TP" : pos.closeReason?.toUpperCase() || "MANUAL"}
                                   </span>
