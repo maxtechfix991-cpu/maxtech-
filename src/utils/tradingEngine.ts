@@ -252,16 +252,18 @@ export async function tickPositions(
 
       // Check if price fell/rose enough to trigger safety order scale-in
       if (isSafetyTriggered) {
-        // Trigger Safety scale-in!
-        const safetySize = bot.safetyOrderSize;
+        // Trigger Safety scale-in with proper margin allocation
+        const safetySize = bot.safetyOrderSize || 100;
+        const leverage = pos.leverage || 1;
+        const marginNeeded = parseFloat((safetySize / leverage).toFixed(2));
         const matchedExchange = pos.exchange || "binance";
 
-        // Check if available balance supports buying safety order
+        // Check if available balance supports locking the required margin
         const currentUsdt = userBalances[matchedExchange]?.USDT || 0;
-        if (currentUsdt >= safetySize) {
-          // Subtract from exchange balance
+        if (currentUsdt >= marginNeeded) {
+          // Subtract only required margin from exchange balance if it requires margin (Futures)
           const nextBal = { ...userBalances };
-          nextBal[matchedExchange].USDT = parseFloat((nextBal[matchedExchange].USDT - safetySize).toFixed(2));
+          nextBal[matchedExchange].USDT = parseFloat((nextBal[matchedExchange].USDT - marginNeeded).toFixed(2));
           onBalancesUpdated(nextBal);
           await dbService.updateUserProfile(userId, { 
             balances: nextBal,
@@ -271,10 +273,10 @@ export async function tickPositions(
 
           // Accumulate positions
           const addedAmount = safetySize / currentPrice;
-          const originalValue = pos.totalInvested;
           
           pos.safetyOrdersCount += 1;
           pos.totalInvested += safetySize;
+          pos.marginLocked = parseFloat(((pos.marginLocked || 0) + marginNeeded).toFixed(2));
           pos.amount += addedAmount;
           // Weighted entry price modification (averaging down)
           pos.entryPrice = parseFloat((pos.totalInvested / pos.amount).toFixed(4));
@@ -290,7 +292,7 @@ export async function tickPositions(
           } else { // short position
             pos.tpTriggerPrice = parseFloat((pos.entryPrice * (1 - targetMargin / 100)).toFixed(4));
             if (bot.stopLossPercent) {
-              const slDistance = pos.entryPrice * (bot.stopLossPercent / 100);
+               const slDistance = pos.entryPrice * (bot.stopLossPercent / 100);
               pos.slTriggerPrice = parseFloat((pos.entryPrice + slDistance).toFixed(4));
             }
           }
@@ -300,7 +302,7 @@ export async function tickPositions(
 
           await dbService.addLog(
             userId,
-            `🛡️ [DCA SAFETY ORDER FILLED] Bot "${bot.name}" scaled-in safety order #${pos.safetyOrdersCount} for ${pos.pair} (${pos.type.toUpperCase()}) @ $${currentPrice}. New weighted entry: $${pos.entryPrice}. Total investment: $${pos.totalInvested} USDT`,
+            `🛡️ [DCA SAFETY ORDER FILLED] Bot "${bot.name}" scaled-in safety order #${pos.safetyOrdersCount} for ${pos.pair} (${pos.type.toUpperCase()}) @ $${currentPrice}. Nominal: +$${safetySize} USDT, Locked Margin: +$${marginNeeded} USDT (${leverage}x). New Weighted Avg Entry: $${pos.entryPrice}. Total Position Value: $${(pos.entryPrice * pos.amount * leverage).toFixed(2)}`,
             "dca_fill",
             pos.botId,
             bot.name
@@ -309,7 +311,7 @@ export async function tickPositions(
           // Insufficient funds for DCA
           await dbService.addLog(
             userId,
-            `⚠️ [DCA FAILURE] Bot "${bot.name}" failed to fill safety order #${pos.safetyOrdersCount + 1} due to insufficient exchange USDT balance. Required: ${safetySize} USDT, Available: ${currentUsdt.toFixed(2)} USDT`,
+            `⚠️ [DCA FAILURE] Bot "${bot.name}" failed to fill safety order #${pos.safetyOrdersCount + 1} due to insufficient exchange USDT balance. Required Margin: ${marginNeeded} USDT, Available: ${currentUsdt.toFixed(2)} USDT`,
             "error",
             pos.botId,
             bot.name

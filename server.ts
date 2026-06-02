@@ -1272,14 +1272,23 @@ async function processWebhookSignalServerSide(
       }
     }
 
-    // Unlimited trade order logic: bypass maximum position budget rejection by capping the order size instead of blocking/skipping
-    let sizeNeeded = baseOrderBudget;
-    if (bot.maxPositionSize && sizeNeeded > bot.maxPositionSize) {
-      sizeNeeded = bot.maxPositionSize;
-    }
-
+    // 2a. Determine leverage and margin requirement with full margin percentage control (no restrictions)
     const leverage = bot.leverage || 1;
-    const marginLocked = sizeNeeded / leverage;
+    let marginLocked = 0;
+    let sizeNeeded = baseOrderBudget;
+
+    if (bot.marginPercent && bot.marginPercent > 0) {
+      // Direct Margin Control: calculate margin requirement as a percentage of available account funds, no restrictions
+      marginLocked = parseFloat(((bot.marginPercent / 100) * userUsdt).toFixed(2));
+      sizeNeeded = parseFloat((marginLocked * leverage).toFixed(2));
+    } else {
+      // Fallback: calculate margin from custom base order size
+      sizeNeeded = baseOrderBudget;
+      if (bot.maxPositionSize && sizeNeeded > bot.maxPositionSize) {
+        sizeNeeded = bot.maxPositionSize;
+      }
+      marginLocked = parseFloat((sizeNeeded / leverage).toFixed(2));
+    }
 
     // Automatically safeguard balance for unlimited simulated trades (auto-refill) to guarantee no orders skip
     if (isPaperTrading) {
@@ -1372,6 +1381,7 @@ async function processWebhookSignalServerSide(
       }
 
       const positionId = "pos_" + crypto.randomBytes(8).toString("hex");
+      const calculatedMarginPercent = bot.marginPercent || parseFloat(((marginLocked / userUsdt) * 100).toFixed(2));
       const newPos = {
         id: positionId,
         userId: bot.userId,
@@ -1386,6 +1396,7 @@ async function processWebhookSignalServerSide(
         totalInvested: sizeNeeded, // nominal size
         marginLocked: parseFloat(marginLocked.toFixed(2)), // cash locked
         leverage: leverage,
+        marginPercent: calculatedMarginPercent,
         paperTrading: isPaperTrading,
         exchange: exchangeId,
         safetyOrdersCount: 0,
@@ -1405,12 +1416,13 @@ async function processWebhookSignalServerSide(
       // Add audit log to database
       const logId = "log_" + crypto.randomBytes(8).toString("hex");
       const trailingValStr = bot.trailingTpPercent && bot.trailingTpPercent > 0 ? `${bot.trailingTpPercent}%` : "Disabled";
+      const totalPosVal = currentPrice * parseFloat(calculatedQty.toFixed(6)) * leverage;
       await setDoc(doc(db, "logs", logId), {
         id: logId,
         userId: bot.userId,
         botId: bot.id,
         botName: bot.name,
-        message: `🟢 [${isPaperTrading ? "PAPER" : "LIVE"} ORDER OPENED VIA WEBHOOK]: Signal Bot "${bot.name}" executed ${directionType.toUpperCase()} entry @ $${currentPrice}. [Config: Exposure: ${sizeNeeded} USDT, Leverage: ${leverage}x, Margin: ${marginLocked.toFixed(2)} USDT, TP: ${bot.takeProfitPercent}%, SL: ${bot.stopLossPercent || 0}%, Trailing TP: ${trailingValStr}] Target TP: $${tpPrice}, Stop-Loss: $${slPrice || "Disabled"}`,
+        message: `🟢 [${isPaperTrading ? "PAPER" : "LIVE"} ORDER OPENED VIA WEBHOOK]: Signal Bot "${bot.name}" executed ${directionType.toUpperCase()} entry @ $${currentPrice}. [TRANSPARENT METRICS: Total Position Value: $${totalPosVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (Formula: Entry Price $${currentPrice} × Position Size ${parseFloat(calculatedQty.toFixed(6))} × Leverage ${leverage}x) | Margin Committed: $${marginLocked.toFixed(2)} USDT (${calculatedMarginPercent.toFixed(1)}% of balance used) | Config: Exposure: ${sizeNeeded} USDT, Leverage: ${leverage}x, Margin: ${marginLocked.toFixed(2)} USDT, TP: ${bot.takeProfitPercent}%, SL: ${bot.stopLossPercent || 0}%, Trailing TP: ${trailingValStr}] Target TP: $${tpPrice}, Stop-Loss: $${slPrice || "Disabled"}`,
         type: "trade",
         timestamp: new Date().toISOString()
       });

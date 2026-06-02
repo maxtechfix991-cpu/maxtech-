@@ -35,6 +35,7 @@ export interface TradingBot {
   paperTrading?: boolean; // paper trading simulation toggle
   capitalProtection?: number; // equity threshold preservation limit (%)
   exchange?: string; // target execution market exchange (e.g. binance, bybit)
+  marginPercent?: number; // User defined margin percentage (1% to 100%)
   createdAt: string;
 }
 
@@ -61,6 +62,7 @@ export interface Position {
   pnlPercent: number; // relative ROI
   leverage?: number; // position leverage if applicable
   marginLocked?: number; // cash locked for leverage
+  marginPercent?: number; // exact margin percentage used at trade execution
   trailingTpPercent?: number; // custom trailing take-profit offset percent
   paperTrading?: boolean; // toggle for sandbox separation
   exchange?: string; // target market exchange

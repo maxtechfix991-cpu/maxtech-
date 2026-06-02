@@ -107,6 +107,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   const [editBotTrailingTpEnabled, setEditBotTrailingTpEnabled] = useState(true);
   const [editPairSearchQuery, setEditPairSearchQuery] = useState("");
   const [editBotLeverage, setEditBotLeverage] = useState<number>(1);
+  const [editBotMarginPercent, setEditBotMarginPercent] = useState<number>(10);
 
   // Position-Level Stop Loss, Take Profit, and Trailing Profit Custom states
   const [editingPositionTargetsId, setEditingPositionTargetsId] = useState<string | null>(null);
@@ -189,6 +190,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   // Risk management and exchange configurations
   const [botExchange, setBotExchange] = useState("binance");
   const [botLeverage, setBotLeverage] = useState<number>(1); // 1x to 50x
+  const [botMarginPercent, setBotMarginPercent] = useState<number>(10); // Committed margin percentage (1% to 100%)
   const [botMaxPositionSize, setBotMaxPositionSize] = useState<number>(1000); // Nominal cap in USDT
   const [botPaperTrading, setBotPaperTrading] = useState<boolean>(true); // Paper trading simulation toggle
   const [botCapitalProtection, setBotCapitalProtection] = useState<number>(0); // Absolute safety limit (USDT)
@@ -1165,6 +1167,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
         webhookSecret: uniqueBotSecret, // Unique per bot, generated securely, tied to user account
         webhookUrl: botWebhookUrl,
         leverage: botLeverage,
+        marginPercent: botMarginPercent,
         maxPositionSize: botMaxPositionSize,
         paperTrading: botPaperTrading,
         capitalProtection: botCapitalProtection,
@@ -1353,6 +1356,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     setEditBotStopLoss(bot.stopLossPercent || 3.0);
     setEditBotTrailingSL(bot.trailingSlEnabled ?? false);
     setEditBotLeverage(bot.leverage || 1);
+    setEditBotMarginPercent(bot.marginPercent || 10);
     setEditPairSearchQuery("");
   };
 
@@ -1393,6 +1397,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
         stopLossPercent: editBotStopLoss,
         trailingSlEnabled: editBotTrailingSL,
         leverage: editBotLeverage,
+        marginPercent: editBotMarginPercent,
       };
 
       await dbService.saveBot(updatedBot);
@@ -2606,7 +2611,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
               {/* Leverage & Capital Protection Algorithmic Risk Grid */}
               <div className="pt-4 border-t border-slate-800/60 space-y-3">
                 <h3 className="text-xs uppercase font-mono font-bold tracking-widest text-[#0ecb81] text-emerald-400">Algorithmic Risk Management</h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div className="space-y-1.5 bg-[#0b0e11]/50 p-3 rounded-lg border border-slate-800/80">
                     <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-300 block">Leverage: <span className="text-white font-extrabold font-mono text-sm">{botLeverage}x</span></label>
                     <input
@@ -2651,6 +2656,40 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     <p className="text-[9px] text-slate-500 font-mono leading-tight pt-1">Balances locked Margin automatically at entry point.</p>
                   </div>
 
+                  <div className="space-y-1.5 bg-[#0b0e11]/50 p-3 rounded-lg border border-slate-800/80">
+                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-300 block">Margin % Used: <span className="text-white font-extrabold font-mono text-sm">{botMarginPercent}%</span></label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="100"
+                      step="1"
+                      value={botMarginPercent}
+                      onChange={(e) => setBotMarginPercent(Math.min(100, Math.max(1, parseInt(e.target.value) || 1)))}
+                      className="w-full accent-emerald-500 cursor-pointer h-1.5 bg-[#181A20] rounded-lg border-none"
+                    />
+                    <div className="flex justify-between text-[8px] font-mono text-slate-500 leading-none">
+                      <span>1%</span>
+                      <span>25%</span>
+                      <span>50%</span>
+                      <span>75%</span>
+                      <span>100%</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={botMarginPercent}
+                        onChange={(e) => setBotMarginPercent(Math.min(100, Math.max(1, parseInt(e.target.value) || 1)))}
+                        className="bg-[#0B0E11] text-[11px] font-mono font-bold text-white border border-slate-800 rounded py-1 px-1.5 w-14 focus:outline-none focus:border-emerald-500"
+                      />
+                      <span className="text-[9px] font-mono text-slate-400 font-bold uppercase">
+                        Portfolio Margin
+                      </span>
+                    </div>
+                    <p className="text-[9px] text-slate-500 font-mono leading-tight pt-1">Defines what percentage of available cash serves as active collateral.</p>
+                  </div>
+
                   <div className="space-y-1">
                     <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Max Cumulative Budget (USDT)</label>
                     <input
@@ -2679,49 +2718,39 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                 </div>
 
                 {/* Dynamic Real-time Calculations Panel */}
-                <div className="mt-3 p-4 bg-[#0B0E11]/80 rounded-xl border border-slate-800/80 space-y-3 font-sans animate-fadeIn">
-                  <div className="flex justify-between items-center border-b border-slate-800/50 pb-2">
-                    <span className="text-[10px] uppercase font-mono tracking-widest font-extrabold text-slate-400">Live Dynamic Position & Margin Estimations</span>
-                    <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 rounded font-mono uppercase font-black">
-                      {botLeverage}x Enabled
-                    </span>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-400">Initial Position Size (Base Order):</span>
-                        <span className="text-white font-mono font-bold">${botBaseOrder.toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT</span>
-                      </div>
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-400 font-semibold">Initial Margin Required:</span>
-                        <span className="text-emerald-400 font-mono font-black border border-emerald-500/25 px-1.5 py-0.5 rounded bg-emerald-950/20">
-                          ${(botBaseOrder / botLeverage).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                {(() => {
+                  const estBalance = activeBalances[botExchange]?.USDT || 15000;
+                  const estInitialMarginRequired = estBalance * (botMarginPercent / 100);
+                  const estInitialPositionSize = estInitialMarginRequired * botLeverage;
+                  return (
+                    <div className="mt-3 p-4 bg-[#0B0E11]/80 rounded-xl border border-slate-800/80 space-y-3 font-sans animate-fadeIn">
+                      <div className="flex justify-between items-center border-b border-slate-800/50 pb-2">
+                        <span className="text-[10px] uppercase font-mono tracking-widest font-extrabold text-slate-400">Live Dynamic Position & Margin Estimations</span>
+                        <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 rounded font-mono uppercase font-black">
+                          {botLeverage}x Enabled
                         </span>
                       </div>
-                    </div>
-
-                    {botType === "dca" && (
-                      <div className="space-y-1.5 border-t md:border-t-0 md:border-l border-slate-800/60 pt-3 md:pt-0 md:pl-4">
-                        <div className="flex justify-between items-center text-xs">
-                          <span className="text-slate-400">Max Cumulative Position Exposure:</span>
-                          <span className="text-white font-mono font-bold">
-                            ${(botBaseOrder + (botSafetyOrder * botMaxSafety)).toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center text-xs">
-                          <span className="text-slate-400 font-semibold">Max Margin Requirement (Locked):</span>
-                          <span className="text-emerald-350 border border-emerald-500/25 px-1.5 py-0.5 rounded bg-slate-900/40 font-mono font-bold text-emerald-300">
-                            ${((botBaseOrder + (botSafetyOrder * botMaxSafety)) / botLeverage).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
-                          </span>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-slate-400">Total Position Value (Entry Price × Position Size × Leverage):</span>
+                            <span className="text-white font-mono font-bold">${estInitialPositionSize.toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT</span>
+                          </div>
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-slate-400 font-semibold font-sans">Committed Margin Required ({botMarginPercent}% of Balance):</span>
+                            <span className="text-emerald-400 font-mono font-black border border-emerald-500/25 px-1.5 py-0.5 rounded bg-emerald-950/20">
+                              ${estInitialMarginRequired.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    )}
-                  </div>
-                  <p className="text-[10px] text-slate-500 font-mono leading-relaxed pt-1">
-                    ⚡ The margin ratio is automatically set to {botLeverage}x. Your exchange account only locks the Required Margin corresponding to your actual entry position size rather than any arbitrary fixed amount.
-                  </p>
-                </div>
+                      <p className="text-[10px] text-slate-500 font-mono leading-relaxed pt-1">
+                        ⚡ Your exchange account locks the Committed Margin of {botMarginPercent}% of balance, scaling your total position value to {botLeverage}x automatically. No arbitrary fixed settings apply.
+                      </p>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Exit Configurations (Trailing Take Profit + Stop Loss) */}
@@ -3369,6 +3398,48 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           </div>
                         </div>
                       </div>
+
+                      {/* Margin % used - Edit Mode */}
+                      <div className="border-t border-slate-800/40 pt-3 mt-2 grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[11px] text-slate-400 font-sans">
+                            <span>Adjust Committed Margin % Used</span>
+                            <span className="font-mono text-white font-extrabold">{editBotMarginPercent}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="1"
+                            max="100"
+                            step="1"
+                            value={editBotMarginPercent}
+                            onChange={(e) => setEditBotMarginPercent(Math.min(100, Math.max(1, parseInt(e.target.value) || 1)))}
+                            className="w-full accent-emerald-500 cursor-pointer h-1.5 bg-[#0b0e11] rounded-lg border-none"
+                          />
+                          <div className="flex justify-between text-[8px] font-mono text-slate-500">
+                            <span>1%</span>
+                            <span>25%</span>
+                            <span>50%</span>
+                            <span>75%</span>
+                            <span>100% Max</span>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider block font-sans">Or Enter Manual Percentage</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              value={editBotMarginPercent}
+                              onChange={(e) => setEditBotMarginPercent(Math.min(100, Math.max(1, parseInt(e.target.value) || 1)))}
+                              className="bg-[#0b0e11] text-xs font-mono font-bold text-white border border-slate-800 rounded-lg py-1.5 px-3 w-28 focus:outline-none focus:border-emerald-500"
+                            />
+                            <span className="text-[9px] font-mono text-slate-455 font-bold uppercase shrink-0">
+                              Portfolio Margin
+                            </span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
 
                     {/* DCA Parameters condition panel */}
@@ -3546,47 +3617,37 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
                     </div>
 
-                    {/* Live Dynamic Calculations Preview - Edit Mode */}
-                    <div className="p-4 bg-[#0B0E11]/80 rounded-xl border border-slate-800/80 space-y-3 font-sans">
-                      <div className="flex justify-between items-center border-b border-slate-800/50 pb-2">
-                        <span className="text-[10px] uppercase font-mono tracking-widest font-extrabold text-slate-400">Live Edited Position & Margin Estimations</span>
-                        <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 rounded font-mono uppercase font-black">
-                          {editBotLeverage}x Mode
-                        </span>
-                      </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="space-y-1.5">
-                          <div className="flex justify-between items-center text-xs">
-                            <span className="text-slate-400">Initial Position Size (Base Order):</span>
-                            <span className="text-white font-mono font-bold">${editBotBaseOrder.toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT</span>
-                          </div>
-                          <div className="flex justify-between items-center text-xs">
-                            <span className="text-slate-400 font-semibold">Initial Margin Required:</span>
-                            <span className="text-emerald-400 font-mono font-black border border-emerald-500/25 px-1.5 py-0.5 rounded bg-emerald-950/20">
-                              ${(editBotBaseOrder / editBotLeverage).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
-                            </span>
-                          </div>
-                        </div>
-
-                        {editingBot.type === "dca" && (
-                          <div className="space-y-1.5 border-t md:border-t-0 md:border-l border-slate-800/60 pt-3 md:pt-0 md:pl-4">
-                            <div className="flex justify-between items-center text-xs">
-                              <span className="text-slate-400">Max Cumulative Position Exposure:</span>
-                              <span className="text-white font-mono font-bold">
-                                ${(editBotBaseOrder + (editBotSafetyOrder * editBotMaxSafety)).toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT
+                     {/* Live Dynamic Calculations Preview - Edit Mode */}
+                     {(() => {
+                        const estBalance = activeBalances[editingBot.exchange || "binance"]?.USDT || 15000;
+                        const estInitialMarginRequired = estBalance * (editBotMarginPercent / 100);
+                        const estInitialPositionSize = estInitialMarginRequired * editBotLeverage;
+                        return (
+                          <div className="p-4 bg-[#0B0E11]/80 rounded-xl border border-slate-800/80 space-y-3 font-sans">
+                            <div className="flex justify-between items-center border-b border-slate-800/50 pb-2">
+                              <span className="text-[10px] uppercase font-mono tracking-widest font-extrabold text-slate-400">Live Edited Position & Margin Estimations</span>
+                              <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 rounded font-mono uppercase font-black">
+                                {editBotLeverage}x Mode
                               </span>
                             </div>
-                            <div className="flex justify-between items-center text-xs">
-                              <span className="text-slate-400 font-semibold">Max Margin Requirement (Locked):</span>
-                              <span className="text-emerald-355 border border-emerald-500/25 px-1.5 py-0.5 rounded bg-slate-900/40 font-mono font-bold text-emerald-300">
-                                ${((editBotBaseOrder + (editBotSafetyOrder * editBotMaxSafety)) / editBotLeverage).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
-                              </span>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="space-y-1.5">
+                                <div className="flex justify-between items-center text-xs">
+                                  <span className="text-slate-400">Total Position Value (Entry Price × Position Size × Leverage):</span>
+                                  <span className="text-white font-mono font-bold">${estInitialPositionSize.toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT</span>
+                                </div>
+                                <div className="flex justify-between items-center text-xs">
+                                  <span className="text-slate-400 font-semibold">Committed Margin Required ({editBotMarginPercent}% of Balance):</span>
+                                  <span className="text-emerald-400 font-mono font-black border border-emerald-500/25 px-1.5 py-0.5 rounded bg-emerald-950/20">
+                                    ${estInitialMarginRequired.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                                  </span>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        )}
-                      </div>
-                    </div>
+                        );
+                     })()}
 
                     {/* Actions Row */}
                     <div className="flex justify-end gap-3 pt-3.5 border-t border-slate-800/80 text-xs">
