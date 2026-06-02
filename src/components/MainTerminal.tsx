@@ -3431,14 +3431,14 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                 </div>
               ) : paginatedClosedPositions.length === 0 ? (
                 <div className="p-16 text-center text-slate-400">
-                  <History className="w-10 h-10 mx-auto text-slate-650 text-slate-600 mb-2.5" />
+                  <History className="w-10 h-10 mx-auto text-slate-600 mb-2.5" />
                   <span className="font-mono text-xs text-slate-500">No matching closed positions archived.</span>
                 </div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse table-auto">
                     <thead>
-                      <tr className="bg-[#181A20] border-b border-slate-850 border-slate-800 text-[10px] uppercase font-mono tracking-wider text-slate-450 text-slate-400">
+                      <tr className="bg-[#181A20] border-b border-slate-800 text-[10px] uppercase font-mono tracking-wider text-slate-400">
                         <th className="py-3 px-4">
                           <button
                             onClick={() => {
@@ -3451,7 +3451,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             }}
                             className="hover:text-white flex items-center gap-1 cursor-pointer"
                           >
-                            Date Closed {historySortKey === "closedAt" ? (historySortOrder === "asc" ? "▲" : "▼") : ""}
+                            Timestamp {historySortKey === "closedAt" ? (historySortOrder === "asc" ? "▲" : "▼") : ""}
                           </button>
                         </th>
                         <th className="py-3 px-4">
@@ -3470,38 +3470,9 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           </button>
                         </th>
                         <th className="py-3 px-4">Direction</th>
-                        <th className="py-3 px-4">Closed Reason</th>
-                        <th className="py-3 px-4">
-                          <button
-                            onClick={() => {
-                              if (historySortKey === "amount") {
-                                setHistorySortOrder(prev => prev === "asc" ? "desc" : "asc");
-                              } else {
-                                setHistorySortKey("amount");
-                                setHistorySortOrder("desc");
-                              }
-                            }}
-                            className="hover:text-white flex items-center gap-1 cursor-pointer"
-                          >
-                            Filled Volume {historySortKey === "amount" ? (historySortOrder === "asc" ? "▲" : "▼") : ""}
-                          </button>
-                        </th>
-                        <th className="py-3 px-4">
-                          <button
-                            onClick={() => {
-                              if (historySortKey === "totalInvested") {
-                                setHistorySortOrder(prev => prev === "asc" ? "desc" : "asc");
-                              } else {
-                                setHistorySortKey("totalInvested");
-                                setHistorySortOrder("desc");
-                              }
-                            }}
-                            className="hover:text-white flex items-center gap-1 cursor-pointer"
-                          >
-                            Cost Basis {historySortKey === "totalInvested" ? (historySortOrder === "asc" ? "▲" : "▼") : ""}
-                          </button>
-                        </th>
-                        <th className="py-3 px-4 text-right">Settled Returns</th>
+                        <th className="py-3 px-4 text-right">TP Target</th>
+                        <th className="py-3 px-4 text-right">SL Target</th>
+                        <th className="py-3 px-4 text-center">Close Reason</th>
                         <th className="py-3 px-4 text-right">
                           <button
                             onClick={() => {
@@ -3514,22 +3485,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             }}
                             className="hover:text-white flex items-center gap-1 cursor-pointer ml-auto"
                           >
-                            Realized profit {historySortKey === "pnl" ? (historySortOrder === "asc" ? "▲" : "▼") : ""}
-                          </button>
-                        </th>
-                        <th className="py-3 px-4 text-right col-span-1">
-                          <button
-                            onClick={() => {
-                              if (historySortKey === "pnlPercent") {
-                                setHistorySortOrder(prev => prev === "asc" ? "desc" : "asc");
-                              } else {
-                                setHistorySortKey("pnlPercent");
-                                setHistorySortOrder("desc");
-                              }
-                            }}
-                            className="hover:text-white flex items-center gap-1 cursor-pointer ml-auto"
-                          >
-                            ROI % {historySortKey === "pnlPercent" ? (historySortOrder === "asc" ? "▲" : "▼") : ""}
+                            Result / ROI {historySortKey === "pnl" ? (historySortOrder === "asc" ? "▲" : "▼") : ""}
                           </button>
                         </th>
                       </tr>
@@ -3537,7 +3493,6 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     <tbody className="divide-y divide-slate-800 text-slate-200 font-mono text-xs">
                       {paginatedClosedPositions.map((pos) => {
                         const isWin = pos.pnl >= 0;
-                        const returnUsdt = pos.totalInvested + pos.pnl;
                         return (
                           <tr key={pos.id} className="hover:bg-slate-800/25 transition">
                             <td className="py-3 px-4 text-slate-400 text-[11px]" title={pos.closedAt}>
@@ -3545,7 +3500,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             </td>
                             <td className="py-3 px-4">
                               <span className="font-bold text-white block">{pos.pair}</span>
-                              <span className="text-[10px] text-slate-555 text-slate-500 font-sans block truncate max-w-[120px]" title={pos.botName}>
+                              <span className="text-[10px] text-slate-500 font-sans block truncate max-w-[120px]" title={pos.botName}>
                                 Bot: {pos.botName}
                               </span>
                             </td>
@@ -3556,7 +3511,21 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                                 {pos.type}
                               </span>
                             </td>
-                            <td className="py-3 px-4">
+                            <td className="py-3 px-4 text-right text-slate-300">
+                              {pos.tpTriggerPrice && pos.tpTriggerPrice > 0 ? (
+                                <span>${pos.tpTriggerPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>
+                              ) : (
+                                <span className="text-slate-600">Disabled</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-right text-slate-300">
+                              {pos.slTriggerPrice && pos.slTriggerPrice > 0 ? (
+                                <span>${pos.slTriggerPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</span>
+                              ) : (
+                                <span className="text-slate-600">Disabled</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-4 text-center">
                               <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase font-sans tracking-wide ${
                                 pos.closeReason === "tp" || pos.closeReason === "trailing_tp"
                                   ? "bg-emerald-950 text-emerald-400 border border-emerald-500/20"
@@ -3567,27 +3536,16 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                                 {pos.closeReason || "Unrecorded"}
                               </span>
                             </td>
-                            <td className="py-3 px-4">
-                              <span>{pos.amount}</span>
-                            </td>
-                            <td className="py-3 px-4">
-                              <span className="text-slate-400">${pos.totalInvested.toFixed(2)} USDT</span>
-                            </td>
                             <td className="py-3 px-4 text-right">
-                              <span className="font-bold text-slate-100">${returnUsdt.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                            </td>
-                            <td className="py-3 px-4 text-right">
-                              <span className={`font-bold inline-flex items-center gap-1 ${isWin ? "text-emerald-400" : "text-red-400"}`}>
-                                {isWin ? <ArrowUpRight className="w-3.5 h-3.5 text-emerald-450" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
-                                {isWin ? "+" : ""}${pos.pnl.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                              </span>
-                            </td>
-                            <td className="py-3 px-4 text-right">
-                              <span className={`px-1.5 py-0.5 rounded text-[11px] font-bold font-mono ${
-                                isWin ? "bg-emerald-950/90 text-emerald-400" : "bg-red-950/90 text-red-400"
-                              }`}>
-                                {isWin ? "+" : ""}{pos.pnlPercent.toFixed(2)}%
-                              </span>
+                              <div className="flex flex-col items-end">
+                                <span className={`font-bold inline-flex items-center gap-1 ${isWin ? "text-emerald-400" : "text-red-400"}`}>
+                                  {isWin ? <ArrowUpRight className="w-3.5 h-3.5 text-emerald-400" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
+                                  {isWin ? "+" : ""}${pos.pnl.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                                </span>
+                                <span className={`text-[10px] font-bold ${isWin ? "text-emerald-500" : "text-red-500"}`}>
+                                  {isWin ? "+" : ""}{pos.pnlPercent.toFixed(2)}%
+                                </span>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -3599,9 +3557,30 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
               {/* Bottom footer total items info */}
               {!loadingHistory && paginatedClosedPositions.length > 0 && (
-                <div className="bg-[#181A20] border-t border-slate-800/80 px-5 py-3 font-mono text-[10px] text-slate-500 flex justify-between items-center">
-                  <span>SHOWING ENTRIES {(currentPage - 1) * historyLimit + 1} - {Math.min(currentPage * historyLimit, totalItems)} OF {totalItems} TOTAL STORES</span>
-                  <span className="uppercase text-emerald-500/80 tracking-normal text-[9px] font-bold">Safe Administrator Firewall Active</span>
+                <div className="bg-[#181A20] border-t border-slate-800/80 px-5 py-3 font-mono text-[10px] text-slate-500 flex flex-col sm:flex-row gap-3 justify-between items-center">
+                  <span>SHOWING ENTRIES {(currentPage - 1) * historyLimit + 1} - {Math.min(currentPage * historyLimit, totalItems)} OF {totalItems} Archived Trades</span>
+                  
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={currentPage <= 1}
+                      onClick={() => setHistoryPage(prev => Math.max(1, prev - 1))}
+                      className="px-2.5 py-1 rounded bg-[#1e2329] hover:bg-slate-800 border border-slate-700/80 text-slate-300 disabled:opacity-40 disabled:hover:bg-[#1e2329] transition cursor-pointer font-bold uppercase text-[9px]"
+                    >
+                      ◀ Prev
+                    </button>
+                    <span className="text-slate-400 px-1">Page {currentPage} of {totalPages}</span>
+                    <button
+                      type="button"
+                      disabled={currentPage >= totalPages}
+                      onClick={() => setHistoryPage(prev => Math.min(totalPages, prev + 1))}
+                      className="px-2.5 py-1 rounded bg-[#1e2329] hover:bg-slate-800 border border-slate-700/80 text-slate-300 disabled:opacity-40 disabled:hover:bg-[#1e2329] transition cursor-pointer font-bold uppercase text-[9px]"
+                    >
+                      Next ▶
+                    </button>
+                  </div>
+
+                  <span className="uppercase text-emerald-500/80 tracking-normal text-[9px] font-bold">Auto-Sync Engine Active</span>
                 </div>
               )}
             </div>
@@ -4260,9 +4239,12 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         const activeBot = bots.find(b => b.id === testerBotId);
                         if (!activeBot) return null;
                         const templateJson = {
+                          botId: activeBot.id,
+                          botName: activeBot.name,
                           action: testerAction,
                           pair: activeBot.pair,
-                          price: "{{close}}"
+                          price: "{{close}}",
+                          secret: globalWebhookSecret
                         };
                         const templateStr = JSON.stringify(templateJson, null, 2);
 
@@ -4392,19 +4374,41 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     <p className="leading-relaxed">
                       Click <strong className="text-white font-bold">"Set Alert"</strong>. Under the <strong className="text-emerald-400 font-bold">Notifications</strong> tab, turn on the Webhook URL checkbox, and paste:
                     </p>
-                    <code className="block p-2 bg-[#0B0E11] rounded text-[10px] font-mono break-all border border-slate-800 text-amber-400">
-                      {testerBotId ? (() => {
-                        const b = bots.find(x => x.id === testerBotId);
-                        if (!b) return computedWebhookUrl;
-                        const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
-                        const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
-                        return b.webhookUrl || `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/${b.id}`;
-                      })() : (() => {
-                        const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
-                        const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
-                        return `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/[bot_id]`;
-                      })()}
-                    </code>
+                    <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+                      <code className="flex-1 p-2 bg-[#0B0E11] rounded text-[10px] font-mono break-all border border-slate-800 text-amber-400">
+                        {testerBotId ? (() => {
+                          const b = bots.find(x => x.id === testerBotId);
+                          if (!b) return computedWebhookUrl;
+                          const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
+                          const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
+                          return b.webhookUrl || `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/${b.id}`;
+                        })() : (() => {
+                          const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
+                          const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
+                          return `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/[bot_id]`;
+                        })()}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const val = testerBotId ? (() => {
+                            const b = bots.find(x => x.id === testerBotId);
+                            if (!b) return computedWebhookUrl;
+                            const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
+                            const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
+                            return b.webhookUrl || `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/${b.id}`;
+                          })() : (() => {
+                            const protocolStr = webhookProtocol ? `${webhookProtocol}://` : "http://";
+                            const portStr = webhookPort && webhookPort !== "80" && webhookPort !== "443" ? `:${webhookPort}` : "";
+                            return `${protocolStr}${webhookHost}${portStr}/webhook/${currentUser.uid}/[bot_id]`;
+                          })();
+                          handleCopyText("computed_bot_wh_url", val);
+                        }}
+                        className="py-1.5 px-3 rounded bg-emerald-600 hover:bg-emerald-500 font-mono text-[9px] font-bold text-white uppercase transition shrink-0 cursor-pointer text-center"
+                      >
+                        {copiedStates["computed_bot_wh_url"] ? "Copied!" : "Copy Webhook URL"}
+                      </button>
+                    </div>
                   </li>
 
                   <li className="space-y-1.5">

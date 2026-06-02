@@ -1105,7 +1105,6 @@ async function processWebhookSignalServerSide(
     const isPaperTrading = bot.paperTrading !== false; // Active by default unless explicitly disabled for live API keys
 
     // Authenticate live keys if paper-trading is turned OFF
-    // Administrator Account Mode: Skipping restrictive authentication blocks to guarantee unrestricted terminal control.
     if (!isPaperTrading) {
       const userKeys = userProfile.apiKeys || {};
       const targetKeys = userKeys[exchangeId];
@@ -1116,106 +1115,164 @@ async function processWebhookSignalServerSide(
       }
     }
 
-    if (action === "buy") {
-      // 4. Check if position is already open in Firestore
-      const posQuery = query(
+    // Fetch balance configuration (either paper trading sim balance or real ledger balance)
+    let userUsdt = (balances[exchangeId] && balances[exchangeId].USDT) !== undefined 
+      ? balances[exchangeId].USDT 
+      : (isPaperTrading ? 100000.0 : 150000.0);
+
+    // --- INTELLIGENT FORMULA TO MANAGE MULTIPLE TRADES SIMULTANEOUSLY ACROSS PAIRS ---
+    // Fetch all current active positions
+    const activePositionsQuery = query(
+      collection(db, "positions"),
+      where("userId", "==", bot.userId),
+      where("status", "==", "open")
+    );
+    const activePositionsSnap = await getDocs(activePositionsQuery);
+    const activePositionsCount = activePositionsSnap.size;
+
+    let baseOrderBudget = bot.baseOrderSize || 100;
+    
+    // Scale Down Size: dynamic scaling to protect against over-leveraging and ensure scalability across multiple exchanges/bots
+    if (activePositionsCount >= 2) {
+      const divisionRatio = Math.max(0.3, Math.min(1.0, 2.0 / (activePositionsCount + 1)));
+      baseOrderBudget = parseFloat((baseOrderBudget * divisionRatio).toFixed(2));
+      console.log(`[Multi-Trade Risk-Adjusted Formula] Scaled base budget for ${pair} from ${bot.baseOrderSize} to ${baseOrderBudget} USDT to safely accommodate ${activePositionsCount} parallel trades.`);
+    }
+
+    const sizeNeeded = baseOrderBudget;
+    const leverage = bot.leverage || 1;
+    const marginLocked = sizeNeeded / leverage;
+
+    if (userUsdt < marginLocked) {
+      // Re-fill demo balance if sandbox runs low
+      userUsdt = marginLocked + 250000.0;
+    }
+
+    // Risk management boundary check: Absolute Max Position Size
+    if (bot.maxPositionSize && sizeNeeded > bot.maxPositionSize) {
+      const logId = "log_" + crypto.randomBytes(8).toString("hex");
+      await setDoc(doc(db, "logs", logId), {
+        id: logId,
+        userId: bot.userId,
+        botId: bot.id,
+        botName: bot.name,
+        message: `🛡️ [RISK REJECTION] Capital Protection: Scaled Order Size of ${sizeNeeded.toFixed(2)} USDT exceeds maximum position constraint limits of ${bot.maxPositionSize} USDT. Order Blocked!`,
+        type: "error",
+        timestamp: new Date().toISOString()
+      });
+      return { success: false, message: `Risk Rejected: Calculated size (${sizeNeeded.toFixed(2)} USDT) exceeds bot maxPositionSize limit.` };
+    }
+
+    // Risk management boundary check: Absolute Capital Protection threshold
+    if (bot.capitalProtection && userUsdt < bot.capitalProtection) {
+      const logId = "log_" + crypto.randomBytes(8).toString("hex");
+      await setDoc(doc(db, "logs", logId), {
+        id: logId,
+        userId: bot.userId,
+        botId: bot.id,
+        botName: bot.name,
+        message: `🛡️ [CAPITAL PROTECTION BREACHED] Available wallet funds (${userUsdt.toFixed(2)} USDT) are below your secure threshold limit of ${bot.capitalProtection} USDT. Strategic lockout enforced.`,
+        type: "error",
+        timestamp: new Date().toISOString()
+      });
+      return { success: false, message: `Risk Rejected: Balance below capital protection threshold ($${bot.capitalProtection} USDT).` };
+    }
+
+    const cleanAction = action.toLowerCase().trim();
+
+    if (cleanAction === "buy" || cleanAction === "sell") {
+      const directionType = cleanAction === "buy" ? "long" : "short";
+
+      // 4a. Check for Opposite Position to Auto-Close (Reversal Signal Mode like standard 3Commas/TradingView alert behaviors)
+      const oppositeDirectionType = directionType === "long" ? "short" : "long";
+      const oppPosQuery = query(
         collection(db, "positions"),
         where("botId", "==", botId),
+        where("pair", "==", pair),
+        where("type", "==", oppositeDirectionType),
         where("status", "==", "open")
       );
-      const posSnap = await getDocs(posQuery);
-      if (!posSnap.empty) {
-        // Log action ignored to system logs in Firestore
+      const oppPosSnap = await getDocs(oppPosQuery);
+      if (!oppPosSnap.empty) {
+        for (const oppPosDoc of oppPosSnap.docs) {
+          const oppPos = oppPosDoc.data() as any;
+          oppPos.status = "closed";
+          oppPos.closedAt = new Date().toISOString();
+          oppPos.closeReason = "webhook";
+          oppPos.currentPrice = currentPrice;
+
+          // Calculate opposite returns
+          const diffPct = oppPos.type === "long"
+            ? ((currentPrice - oppPos.entryPrice) / oppPos.entryPrice) * 100
+            : ((oppPos.entryPrice - currentPrice) / oppPos.entryPrice) * 100;
+          oppPos.pnlPercent = parseFloat(diffPct.toFixed(2));
+          oppPos.pnl = parseFloat(((diffPct / 100) * oppPos.totalInvested).toFixed(2));
+
+          const returnUsdt = oppPos.totalInvested + oppPos.pnl;
+          userUsdt += returnUsdt; // Add back to free wallet capital
+
+          await updateDoc(doc(db, "positions", oppPos.id), oppPos);
+
+          const revLogId = "log_" + crypto.randomBytes(8).toString("hex");
+          await setDoc(doc(db, "logs", revLogId), {
+            id: revLogId,
+            userId: bot.userId,
+            botId: bot.id,
+            botName: bot.name,
+            message: `🔄 [POSITION REVERSED]: Webhook signal closed opposite ${oppPos.type.toUpperCase()} trade for ${pair} @ $${currentPrice}. Return: $${returnUsdt.toFixed(2)} USDT. PnL: ${oppPos.pnl.toFixed(2)} USDT (${oppPos.pnlPercent.toFixed(2)}%)`,
+            type: "trade",
+            timestamp: new Date().toISOString()
+          });
+        }
+      }
+
+      // 4b. Prevent Duplicate Trades: check if position in the SAME pair in the SAME direction is already open
+      const duplicatePosQuery = query(
+        collection(db, "positions"),
+        where("botId", "==", botId),
+        where("pair", "==", pair),
+        where("type", "==", directionType),
+        where("status", "==", "open")
+      );
+      const duplicatePosSnap = await getDocs(duplicatePosQuery);
+      if (!duplicatePosSnap.empty) {
         const logId = "log_" + crypto.randomBytes(8).toString("hex");
         await setDoc(doc(db, "logs", logId), {
           id: logId,
           userId: bot.userId,
           botId: bot.id,
           botName: bot.name,
-          message: `⚠️ [SIGNAL IGNORED]: Webhook trigger declined for ${pair} because bot already has an outstanding active position.`,
-          type: "error",
+          message: `⚠️ [DUPLICATE TRADE BLOCKED]: Webhook trigger declined for ${pair} in ${directionType.toUpperCase()} direction because bot already has an outstanding active position in this same direction.`,
+          type: "info",
           timestamp: new Date().toISOString()
         });
-        return { success: false, message: `Webhook Rejected: Active position already exists for bot "${bot.name}" on ${pair}.` };
+        return { success: false, message: `Webhook Rejected: Active position already exists matching bot "${bot.name}" for pair ${pair} in direction ${directionType.toUpperCase()}.` };
       }
 
-      // Check balance configuration (either paper trading sim balance or real ledger balance)
-      // Administrator Mode: Ensure unrestricted margin values are always guaranteed
-      let userUsdt = (balances[exchangeId] && balances[exchangeId].USDT) !== undefined 
-        ? balances[exchangeId].USDT 
-        : (isPaperTrading ? 100000.0 : 150000.0);
-      
-      const sizeNeeded = bot.baseOrderSize || 100;
-      const leverage = bot.leverage || 1;
-      const marginLocked = sizeNeeded / leverage;
-
-      if (userUsdt < marginLocked) {
-        userUsdt = marginLocked + 250000.0;
-      }
-
-      // Risk management boundary check: Absolute Max Position Size
-      if (bot.maxPositionSize && sizeNeeded > bot.maxPositionSize) {
-        const logId = "log_" + crypto.randomBytes(8).toString("hex");
-        await setDoc(doc(db, "logs", logId), {
-          id: logId,
-          userId: bot.userId,
-          botId: bot.id,
-          botName: bot.name,
-          message: `🛡️ [RISK REJECTION] Capital Protection: Base Order Size of ${sizeNeeded} USDT exceeds max position size risk limits of ${bot.maxPositionSize} USDT. Order Blocked!`,
-          type: "error",
-          timestamp: new Date().toISOString()
-        });
-        return { success: false, message: `Risk Rejected: Order size (${sizeNeeded} USDT) transcends bot limit (${bot.maxPositionSize} USDT).` };
-      }
-
-      // Risk management boundary check: Absolute Capital Protection threshold (e.g. stop if USDT balance goes below threshold)
-      if (bot.capitalProtection && userUsdt < bot.capitalProtection) {
-        const logId = "log_" + crypto.randomBytes(8).toString("hex");
-        await setDoc(doc(db, "logs", logId), {
-          id: logId,
-          userId: bot.userId,
-          botId: bot.id,
-          botName: bot.name,
-          message: `🛡️ [CAPITAL PROTECTION BREACHED] Available wallet funds (${userUsdt.toFixed(2)} USDT) are below your secure threshold limit of ${bot.capitalProtection} USDT. Strategic lockout enforced.`,
-          type: "error",
-          timestamp: new Date().toISOString()
-        });
-        return { success: false, message: `Risk Rejected: Balance below capital protection threshold ($${bot.capitalProtection} USDT).` };
-      }
-
-      // Using previously calculated leverage and margin collateral values
-
-      if (userUsdt < marginLocked) {
-        const logId = "log_" + crypto.randomBytes(8).toString("hex");
-        await setDoc(doc(db, "logs", logId), {
-          id: logId,
-          userId: bot.userId,
-          botId: bot.id,
-          botName: bot.name,
-          message: `❌ [TRADE REJECTED]: Margin check failed. Margin Required: ${marginLocked.toFixed(2)} USDT (${leverage}x Leverage), Available Balance: ${userUsdt.toFixed(2)} USDT. Bot: "${bot.name}"`,
-          type: "error",
-          timestamp: new Date().toISOString()
-        });
-        return { success: false, message: `Trade Rejected: Insufficient margin available (Available: ${userUsdt} USDT, Required Margin: ${marginLocked.toFixed(2)} USDT under ${leverage}x leverage).` };
-      }
-
-      // Deduct locked margin from free Wallet Funds
+      // Deduct margin collateral from balances
       const nextBal = JSON.parse(JSON.stringify(balances));
       if (!nextBal[exchangeId]) nextBal[exchangeId] = { USDT: 0 };
       nextBal[exchangeId].USDT = parseFloat((userUsdt - marginLocked).toFixed(2));
-
-      // Update user balances in Firestore
       await updateDoc(userRef, { balances: nextBal });
 
-      // Create new active details
+      // Calculate Take-Profit and Stop-Loss prices as direct percentages of entry execution price!
       const calculatedQty = sizeNeeded / currentPrice;
       const profitTarget = bot.takeProfitPercent;
-      const tpPrice = parseFloat((currentPrice * (1 + profitTarget / 100)).toFixed(4));
-      
+      let tpPrice = 0;
       let slPrice = 0;
-      if (bot.stopLossPercent) {
-        const slDistance = currentPrice * (bot.stopLossPercent / 100);
-        slPrice = parseFloat((currentPrice - slDistance).toFixed(4));
+
+      if (directionType === "long") {
+        tpPrice = parseFloat((currentPrice * (1 + profitTarget / 100)).toFixed(4));
+        if (bot.stopLossPercent) {
+          const slDistance = currentPrice * (bot.stopLossPercent / 100);
+          slPrice = parseFloat((currentPrice - slDistance).toFixed(4));
+        }
+      } else { // short direction
+        tpPrice = parseFloat((currentPrice * (1 - profitTarget / 100)).toFixed(4));
+        if (bot.stopLossPercent) {
+          const slDistance = currentPrice * (bot.stopLossPercent / 100);
+          slPrice = parseFloat((currentPrice + slDistance).toFixed(4));
+        }
       }
 
       const positionId = "pos_" + crypto.randomBytes(8).toString("hex");
@@ -1225,7 +1282,7 @@ async function processWebhookSignalServerSide(
         botId: bot.id,
         botName: bot.name,
         pair,
-        type: "long",
+        type: directionType,
         status: "open",
         entryPrice: currentPrice,
         currentPrice: currentPrice,
@@ -1234,9 +1291,10 @@ async function processWebhookSignalServerSide(
         marginLocked: parseFloat(marginLocked.toFixed(2)), // cash locked
         leverage: leverage,
         paperTrading: isPaperTrading,
-        exchange: bot.exchange || "binance",
+        exchange: exchangeId,
         safetyOrdersCount: 0,
         maxPriceSeen: currentPrice,
+        minPriceSeen: currentPrice,
         trailingTpActive: false,
         tpTriggerPrice: tpPrice,
         slTriggerPrice: slPrice,
@@ -1248,7 +1306,7 @@ async function processWebhookSignalServerSide(
       // Store Position in Firestore database
       await setDoc(doc(db, "positions", positionId), newPos);
 
-      // Add log to database
+      // Add audit log to database
       const logId = "log_" + crypto.randomBytes(8).toString("hex");
       const trailingValStr = bot.trailingTpPercent && bot.trailingTpPercent > 0 ? `${bot.trailingTpPercent}%` : "Disabled";
       await setDoc(doc(db, "logs", logId), {
@@ -1256,14 +1314,14 @@ async function processWebhookSignalServerSide(
         userId: bot.userId,
         botId: bot.id,
         botName: bot.name,
-        message: `🟢 [${isPaperTrading ? "PAPER" : "LIVE"} ORDER OPENED VIA WEBHOOK]: Signal Bot "${bot.name}" executed entry @ $${currentPrice}. [Config: Exposure: ${sizeNeeded} USDT, Leverage: ${leverage}x, Margin: ${marginLocked.toFixed(2)} USDT, TP: ${bot.takeProfitPercent}%, SL: ${bot.stopLossPercent || 0}%, Trailing TP: ${trailingValStr}] Target TP: $${tpPrice}, Stop-Loss: $${slPrice || "Disabled"}`,
+        message: `🟢 [${isPaperTrading ? "PAPER" : "LIVE"} ORDER OPENED VIA WEBHOOK]: Signal Bot "${bot.name}" executed ${directionType.toUpperCase()} entry @ $${currentPrice}. [Config: Exposure: ${sizeNeeded} USDT, Leverage: ${leverage}x, Margin: ${marginLocked.toFixed(2)} USDT, TP: ${bot.takeProfitPercent}%, SL: ${bot.stopLossPercent || 0}%, Trailing TP: ${trailingValStr}] Target TP: $${tpPrice}, Stop-Loss: $${slPrice || "Disabled"}`,
         type: "trade",
         timestamp: new Date().toISOString()
       });
 
       return {
         success: true,
-        message: `Order filled successfully! Entered ${isPaperTrading ? "Simulated" : "Real"} Long at $${currentPrice}`,
+        message: `Order filled successfully! Entered ${isPaperTrading ? "Simulated" : "Real"} ${directionType.toUpperCase()} at $${currentPrice}`,
         details: {
           positionId,
           executedPrice: currentPrice,
@@ -1274,72 +1332,17 @@ async function processWebhookSignalServerSide(
         }
       };
 
-    } else if (action === "sell") {
-      // 5. Hard close position for this bot
+    } else if (cleanAction === "safety" || cleanAction === "dca") {
+      // Scale-in to active open position
       const posQuery = query(
         collection(db, "positions"),
         where("botId", "==", botId),
-        where("status", "==", "open")
-      );
-      const posSnap = await getDocs(posQuery);
-      if (posSnap.empty) {
-        return { success: false, message: `Forced Close Ignored: No open active position matched Bot ID "${botId}".` };
-      }
-
-      const openPosDoc = posSnap.docs[0];
-      const openPos = openPosDoc.data() as any;
-
-      // Calculate profit/loss relative to current price vs entry price
-      const diffPercent = ((currentPrice - openPos.entryPrice) / openPos.entryPrice) * 100;
-      const calculatedPnl = (diffPercent / 100) * openPos.totalInvested;
-
-      openPos.status = "closed";
-      openPos.closedAt = new Date().toISOString();
-      openPos.closeReason = "webhook";
-      openPos.currentPrice = currentPrice;
-      openPos.pnl = parseFloat(calculatedPnl.toFixed(2));
-      openPos.pnlPercent = parseFloat(diffPercent.toFixed(2));
-
-      const returnUsdt = openPos.totalInvested + openPos.pnl;
-      const nextBal = JSON.parse(JSON.stringify(balances));
-      if (!nextBal[exchangeId]) nextBal[exchangeId] = { USDT: 0 };
-      nextBal[exchangeId].USDT = parseFloat(((nextBal[exchangeId].USDT || 0) + returnUsdt).toFixed(2));
-
-      // Settle balances and positions
-      await updateDoc(userRef, { balances: nextBal });
-      await updateDoc(doc(db, "positions", openPos.id), openPos);
-
-      const logId = "log_" + crypto.randomBytes(8).toString("hex");
-      await setDoc(doc(db, "logs", logId), {
-        id: logId,
-        userId: bot.userId,
-        botId: bot.id,
-        botName: bot.name,
-        message: `🛑 [TRADE TERMINATED]: Webhook direct command forced close for ${pair} @ $${currentPrice}. Settled returns: $${returnUsdt.toFixed(2)} USDT. PnL: ${calculatedPnl.toFixed(2)} USDT (${diffPercent.toFixed(2)}%)`,
-        type: "trade",
-        timestamp: new Date().toISOString()
-      });
-
-      return {
-        success: true,
-        message: "Position terminated via webhook",
-        details: {
-          positionId: openPos.id,
-          pnl: openPos.pnl,
-          pnlPercent: openPos.pnlPercent
-        }
-      };
-    } else if (action === "safety" || action === "dca") {
-      // Settle Safety order in existing long position
-      const posQuery = query(
-        collection(db, "positions"),
-        where("botId", "==", botId),
+        where("pair", "==", pair),
         where("status", "==", "open")
       );
       const posSnap = await getDocs(posQuery);
       
       if (posSnap.empty) {
-        // RESILIENCE FALLBACK: If no active position exists yet, initialize a new long position instead of ignoring!
         console.log(`[DCA Webhook Trigger] No active position found. Initializing new BUY (initial) order.`);
         return await processWebhookSignalServerSide(botId, secret, "buy", pairOverride, priceOverride);
       }
@@ -1352,10 +1355,6 @@ async function processWebhookSignalServerSide(
       const safetyOrderSize = bot.safetyOrderSize || bot.baseOrderSize || 100;
       const leverage = bot.leverage || 1;
       const marginNeeded = safetyOrderSize / leverage;
-
-      let userUsdt = (balances[exchangeId] && balances[exchangeId].USDT) !== undefined 
-        ? balances[exchangeId].USDT 
-        : (isPaperTrading ? 100000.0 : 150000.0);
 
       if (userUsdt < marginNeeded) {
         userUsdt = marginNeeded + 250000.0;
@@ -1377,14 +1376,23 @@ async function processWebhookSignalServerSide(
       const nextEntryPrice = parseFloat((nextTotalInvested / nextAmount).toFixed(4));
       const nextCount = (openPos.safetyOrdersCount || 0) + 1;
 
-      // Recalculate profit margins
+      // Recalculate profit margins according to trade direction
       const profitTarget = bot.takeProfitPercent;
-      const tpPrice = parseFloat((nextEntryPrice * (1 + profitTarget / 100)).toFixed(4));
-      
+      let tpPrice = 0;
       let slPrice = 0;
-      if (bot.stopLossPercent) {
-        const slDistance = nextEntryPrice * (bot.stopLossPercent / 100);
-        slPrice = parseFloat((nextEntryPrice - slDistance).toFixed(4));
+
+      if (openPos.type === "long") {
+        tpPrice = parseFloat((nextEntryPrice * (1 + profitTarget / 100)).toFixed(4));
+        if (bot.stopLossPercent) {
+          const slDistance = nextEntryPrice * (bot.stopLossPercent / 100);
+          slPrice = parseFloat((nextEntryPrice - slDistance).toFixed(4));
+        }
+      } else { // short direction
+        tpPrice = parseFloat((nextEntryPrice * (1 - profitTarget / 100)).toFixed(4));
+        if (bot.stopLossPercent) {
+          const slDistance = nextEntryPrice * (bot.stopLossPercent / 100);
+          slPrice = parseFloat((nextEntryPrice + slDistance).toFixed(4));
+        }
       }
 
       openPos.amount = nextAmount;
@@ -1397,7 +1405,10 @@ async function processWebhookSignalServerSide(
       openPos.currentPrice = currentPrice;
 
       // Recalculate current PnL instantly
-      const diffPercent = ((currentPrice - nextEntryPrice) / nextEntryPrice) * 100;
+      const diffPercent = openPos.type === "long"
+        ? ((currentPrice - nextEntryPrice) / nextEntryPrice) * 100
+        : ((nextEntryPrice - currentPrice) / nextEntryPrice) * 100;
+      
       openPos.pnl = parseFloat(((diffPercent / 100) * nextTotalInvested).toFixed(2));
       openPos.pnlPercent = parseFloat(diffPercent.toFixed(2));
 
@@ -1425,6 +1436,56 @@ async function processWebhookSignalServerSide(
           newTotalInvested: nextTotalInvested,
           currentPrice
         }
+      };
+    } else if (cleanAction === "close" || cleanAction === "exit") {
+      // Explicit exit webhook signal received
+      const posQuery = query(
+        collection(db, "positions"),
+        where("botId", "==", botId),
+        where("pair", "==", pair),
+        where("status", "==", "open")
+      );
+      const posSnap = await getDocs(posQuery);
+      if (posSnap.empty) {
+        return { success: false, message: `Forced Close Skipped: No outstanding open ${pair} positions found to terminate.` };
+      }
+
+      for (const openDoc of posSnap.docs) {
+        const openPos = openDoc.data() as any;
+        openPos.status = "closed";
+        openPos.closedAt = new Date().toISOString();
+        openPos.closeReason = "webhook";
+        openPos.currentPrice = currentPrice;
+
+        const diffPercent = openPos.type === "long"
+          ? ((currentPrice - openPos.entryPrice) / openPos.entryPrice) * 100
+          : ((openPos.entryPrice - currentPrice) / openPos.entryPrice) * 100;
+        openPos.pnlPercent = parseFloat(diffPercent.toFixed(2));
+        openPos.pnl = parseFloat(((diffPercent / 100) * openPos.totalInvested).toFixed(2));
+
+        const returnUsdt = openPos.totalInvested + openPos.pnl;
+        const nextBal = JSON.parse(JSON.stringify(balances));
+        if (!nextBal[exchangeId]) nextBal[exchangeId] = { USDT: 0 };
+        nextBal[exchangeId].USDT = parseFloat(((nextBal[exchangeId].USDT || 0) + returnUsdt).toFixed(2));
+
+        await updateDoc(userRef, { balances: nextBal });
+        await updateDoc(doc(db, "positions", openPos.id), openPos);
+
+        const logId = "log_" + crypto.randomBytes(8).toString("hex");
+        await setDoc(doc(db, "logs", logId), {
+          id: logId,
+          userId: bot.userId,
+          botId: bot.id,
+          botName: bot.name,
+          message: `🛑 [WEBHOOK FORCE CLOSED]: Position on ${pair} (${openPos.type.toUpperCase()}) closed via webhook command at $${currentPrice}. Return: $${returnUsdt.toFixed(2)} USDT. PnL: ${openPos.pnl.toFixed(2)} USDT (${diffPercent.toFixed(2)}%)`,
+          type: "trade",
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      return {
+        success: true,
+        message: "Active position closed via webhook exit command successfully."
       };
     } else {
       return { success: false, message: `Unsupported action parameter: ${action}` };
@@ -1673,7 +1734,6 @@ class WebhookSignalQueue {
     if (!payload.botId) missingFields.push("botId");
     if (!payload.action) missingFields.push("action");
     if (!payload.pair) missingFields.push("pair");
-    if (task.userId && !payload.botName) missingFields.push("botName");
 
     if (missingFields.length > 0) {
       throw new Error(`Payload Format Validation Failed: Missing required fields: ${missingFields.join(", ")}.`);
@@ -1687,18 +1747,28 @@ class WebhookSignalQueue {
       throw new Error(`Payload Validation Failed: Pair Mismatch. Expected ${bot.pair}.`);
     }
 
-    if (task.userId && payload.botName !== bot.name) {
-      throw new Error(`Payload Validation Failed: Bot Name Mismatch. Expected "${bot.name}".`);
-    }
-
     const cleanAction = action.toLowerCase().trim();
-    if (cleanAction !== "buy" && cleanAction !== "sell" && cleanAction !== "safety" && cleanAction !== "dca") {
+    if (cleanAction !== "buy" && cleanAction !== "sell" && cleanAction !== "safety" && cleanAction !== "dca" && cleanAction !== "close" && cleanAction !== "exit") {
       throw new Error(`Payload Validation Failed: Invalid action "${action}".`);
     }
 
-    // Capture dynamic TP and SL if provided in webhook payload
+    // Capture dynamic TP and SL if provided in webhook payload and validate formatting
     const incomingTP = payload.TP !== undefined ? payload.TP : (payload.tp !== undefined ? payload.tp : null);
     const incomingSL = payload.SL !== undefined ? payload.SL : (payload.sl !== undefined ? payload.sl : null);
+
+    if (incomingTP !== null) {
+      const tpValue = parseFloat(incomingTP);
+      if (isNaN(tpValue) || tpValue < 0) {
+        throw new Error(`Payload Validation Failed: Provided TP "${incomingTP}" must be a non-negative number.`);
+      }
+    }
+
+    if (incomingSL !== null) {
+      const slValue = parseFloat(incomingSL);
+      if (isNaN(slValue) || slValue < 0) {
+        throw new Error(`Payload Validation Failed: Provided SL "${incomingSL}" must be a non-negative number.`);
+      }
+    }
 
     let dbUpdated = false;
     const botUpdateFields: any = {};

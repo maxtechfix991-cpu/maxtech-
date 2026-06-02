@@ -226,11 +226,23 @@ export async function tickPositions(
     // CHECK DCA SAFETY ORDERS (ONLY FOR DCA TYPE BOTS)
     // ----------------------------------------------------
     if (bot.type === "dca" && bot.priceDeviation && bot.maxSafetyOrders && bot.safetyOrderSize) {
-      const priceDropPct = ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100;
-      const requiredDrop = bot.priceDeviation * (pos.safetyOrdersCount + 1);
+      const requiredDeviation = bot.priceDeviation * (pos.safetyOrdersCount + 1);
+      let isSafetyTriggered = false;
 
-      // Check if price fell enough to trigger safety order scale-in
-      if (pos.type === "long" && priceDropPct >= requiredDrop && pos.safetyOrdersCount < bot.maxSafetyOrders) {
+      if (pos.type === "long") {
+        const priceDropPct = ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100;
+        if (priceDropPct >= requiredDeviation && pos.safetyOrdersCount < bot.maxSafetyOrders) {
+          isSafetyTriggered = true;
+        }
+      } else { // short direction
+        const priceRisePct = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
+        if (priceRisePct >= requiredDeviation && pos.safetyOrdersCount < bot.maxSafetyOrders) {
+          isSafetyTriggered = true;
+        }
+      }
+
+      // Check if price fell/rose enough to trigger safety order scale-in
+      if (isSafetyTriggered) {
         // Trigger Safety scale-in!
         const safetySize = bot.safetyOrderSize;
         const matchedExchange = "binance";
@@ -256,12 +268,18 @@ export async function tickPositions(
           
           // Re-calculate target take profit threshold price from new scaled entry!
           const targetMargin = bot.takeProfitPercent;
-          pos.tpTriggerPrice = parseFloat((pos.entryPrice * (1 + targetMargin / 100)).toFixed(4));
-
-          // Reset stop loss trigger price from new entry price
-          if (bot.stopLossPercent) {
-            const slDistance = pos.entryPrice * (bot.stopLossPercent / 100);
-            pos.slTriggerPrice = parseFloat((pos.entryPrice - slDistance).toFixed(4));
+          if (pos.type === "long") {
+            pos.tpTriggerPrice = parseFloat((pos.entryPrice * (1 + targetMargin / 100)).toFixed(4));
+            if (bot.stopLossPercent) {
+              const slDistance = pos.entryPrice * (bot.stopLossPercent / 100);
+              pos.slTriggerPrice = parseFloat((pos.entryPrice - slDistance).toFixed(4));
+            }
+          } else { // short position
+            pos.tpTriggerPrice = parseFloat((pos.entryPrice * (1 - targetMargin / 100)).toFixed(4));
+            if (bot.stopLossPercent) {
+              const slDistance = pos.entryPrice * (bot.stopLossPercent / 100);
+              pos.slTriggerPrice = parseFloat((pos.entryPrice + slDistance).toFixed(4));
+            }
           }
 
           await dbService.savePosition(pos);
@@ -269,7 +287,7 @@ export async function tickPositions(
 
           await dbService.addLog(
             userId,
-            `🛡️ [DCA SAFETY ORDER FILLED] Bot "${bot.name}" scaled-in safety order #${pos.safetyOrdersCount} for ${pos.pair} @ $${currentPrice}. New weighted entry: $${pos.entryPrice}. Total investment: $${pos.totalInvested} USDT`,
+            `🛡️ [DCA SAFETY ORDER FILLED] Bot "${bot.name}" scaled-in safety order #${pos.safetyOrdersCount} for ${pos.pair} (${pos.type.toUpperCase()}) @ $${currentPrice}. New weighted entry: $${pos.entryPrice}. Total investment: $${pos.totalInvested} USDT`,
             "dca_fill",
             pos.botId,
             bot.name
