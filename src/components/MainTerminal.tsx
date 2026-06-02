@@ -54,6 +54,26 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   const [historyLimit, setHistoryLimit] = useState<number>(10);
   const [historySearchQuery, setHistorySearchQuery] = useState("");
 
+  // Trade History filters states (Durable, multi-exchange)
+  const [historyMarketType, setHistoryMarketType] = useState<"all" | "spot" | "futures">("all");
+  const [historyPairFilter, setHistoryPairFilter] = useState<string>("all");
+  const [historyDateRange, setHistoryDateRange] = useState<"all" | "1d" | "7d" | "30d">("all");
+
+  // Global customizable preferences & defaults (Auto-Saves to cloud)
+  const [globalSettings, setGlobalSettings] = useState(() => {
+    const fallbackSettings = {
+      defaultLeverage: 10,
+      defaultPaperTrading: true,
+      maxPositionSizeLimit: 25000,
+      soundAlertsEnabled: true,
+      autoRefillEnabled: true,
+      priceTickRate: 3500,
+      hideApiKeys: false
+    };
+    return { ...fallbackSettings, ...(user.settings || {}) };
+  });
+  const [showAutoSaveTick, setShowAutoSaveTick] = useState(false);
+
   // Live market price feeds
   const [marketPrices, setMarketPrices] = useState<Record<string, number>>(INITIAL_PRICES);
   const [priceHistories, setPriceHistories] = useState<Record<string, number[]>>({
@@ -93,6 +113,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
 
   // Audio chime synthesizer for TradingView integration alerts
   const playAlertBeepSound = () => {
+    if (!globalSettings?.soundAlertsEnabled) return;
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
@@ -287,13 +308,58 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     return `wh_usr_${currentUser.uid.replace(/[^\w]/g, "").substring(0, 8)}_${currentUser.recoveryPhrase}`;
   }, [currentUser]);
 
-  // Clipboard copies handler
+  // Clipboard copies handler (With hyper-reliable fallback for iframes and insecure contexts)
   const handleCopyText = (key: string, value: string) => {
-    navigator.clipboard.writeText(value);
-    setCopiedStates(prev => ({ ...prev, [key]: true }));
-    setTimeout(() => {
-      setCopiedStates(prev => ({ ...prev, [key]: false }));
-    }, 1500);
+    const fallbackCopy = (text: string) => {
+      try {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.top = "0";
+        textArea.style.left = "0";
+        textArea.style.width = "2em";
+        textArea.style.height = "2em";
+        textArea.style.padding = "0";
+        textArea.style.border = "none";
+        textArea.style.outline = "none";
+        textArea.style.boxShadow = "none";
+        textArea.style.background = "transparent";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        const successful = document.execCommand("copy");
+        document.body.removeChild(textArea);
+        return successful;
+      } catch (err) {
+        console.error("Fallback DOM copy failed:", err);
+        return false;
+      }
+    };
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value)
+        .then(() => {
+          setCopiedStates(prev => ({ ...prev, [key]: true }));
+          setTimeout(() => setCopiedStates(prev => ({ ...prev, [key]: false })), 1500);
+        })
+        .catch(() => {
+          const ok = fallbackCopy(value);
+          if (ok) {
+            setCopiedStates(prev => ({ ...prev, [key]: true }));
+            setTimeout(() => setCopiedStates(prev => ({ ...prev, [key]: false })), 1500);
+          } else {
+            triggerNotification("Browser security restricted direct clipboard copying.", "error");
+          }
+        });
+    } else {
+      const ok = fallbackCopy(value);
+      if (ok) {
+        setCopiedStates(prev => ({ ...prev, [key]: true }));
+        setTimeout(() => setCopiedStates(prev => ({ ...prev, [key]: false })), 1500);
+      } else {
+        triggerNotification("Browser security restricted direct clipboard copying.", "error");
+      }
+    }
   };
 
   // Fetch real futures pairs from the API
@@ -405,6 +471,106 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     }
   };
 
+  // Clear persistent terminated trade records manually
+  const handleClearTradeHistory = async () => {
+    if (!currentUser?.uid) return;
+    const confirmClear = window.confirm("Are you sure you want to permanently clear all closed positions and trade history?");
+    if (!confirmClear) return;
+
+    try {
+      setLoadingHistory(true);
+      await dbService.clearTradeHistory(currentUser.uid);
+      setClosedPositions([]);
+      triggerNotification("Archival trade history cleared successfully.", "success");
+      await dbService.addLog(
+        currentUser.uid,
+        "🧹 Archival [TRADE HISTORY CLEARED]: User cleared all terminated position records manually.",
+        "info"
+      );
+    } catch (err: any) {
+      console.error(err);
+      triggerNotification("Failed to clear trade history.", "error");
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  // Remove API key connection per exchange
+  const handleRemoveExchangeKeys = async (exchangeKey: string) => {
+    if (!currentUser?.uid) return;
+    const confirmRemove = window.confirm(`Are you sure you want to disconnect and delete your API keys for ${exchangeKey.toUpperCase()}?`);
+    if (!confirmRemove) return;
+
+    try {
+      setExchangeSyncLoading(true);
+      const updatedKeys = { ...(currentUser.apiKeys || {}) };
+      delete updatedKeys[exchangeKey];
+
+      // Build updated profile
+      const updatedProfile = {
+        ...currentUser,
+        apiKeys: updatedKeys
+      };
+
+      // Sync and save to database
+      await fetch("/api/user/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: currentUser.uid,
+          apiKeys: updatedKeys
+        })
+      });
+
+      setCurrentUser(updatedProfile);
+      localStorage.setItem("apex_trader_session", JSON.stringify(updatedProfile));
+      triggerNotification(`Successfully disconnected ${exchangeKey.toUpperCase()} API connection keys.`, "success");
+      
+      await dbService.addLog(
+        currentUser.uid,
+        `🗝️ Exchange [KEY DELETED]: Removed credentials for ${exchangeKey.toUpperCase()} dynamically.`,
+        "info"
+      );
+    } catch (err: any) {
+      console.error(err);
+      triggerNotification("Failed to disconnect exchange keys.", "error");
+    } finally {
+      setExchangeSyncLoading(false);
+    }
+  };
+
+  // Auto-Save Customizable Global Settings UI parameters immediately to cloud instance
+  const handleAutoSaveSettings = async (nextSettings: any) => {
+    if (!currentUser?.uid) return;
+    setGlobalSettings(nextSettings);
+    setShowAutoSaveTick(true);
+
+    try {
+      const updatedProfile = {
+        ...currentUser,
+        settings: nextSettings
+      };
+
+      await fetch("/api/user/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: currentUser.uid,
+          settings: nextSettings
+        })
+      });
+
+      setCurrentUser(updatedProfile);
+      localStorage.setItem("apex_trader_session", JSON.stringify(updatedProfile));
+      
+      setTimeout(() => setShowAutoSaveTick(false), 2000);
+    } catch (err: any) {
+      console.error("Auto-save settings failed:", err);
+      triggerNotification("Preferences auto-save failed.", "error");
+      setShowAutoSaveTick(false);
+    }
+  };
+
   useEffect(() => {
     if (activeTab === "trade_history") {
       loadTradeHistory();
@@ -433,53 +599,68 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   useEffect(() => {
     if (!currentUser || !currentUser.uid) return;
     loadWebhookHistory();
-    const intervalId = setInterval(loadWebhookHistory, 3500);
+    const intervalId = setInterval(loadWebhookHistory, globalSettings.priceTickRate || 3500);
     return () => clearInterval(intervalId);
-  }, [currentUser?.uid]);
+  }, [currentUser?.uid, globalSettings.priceTickRate]);
 
   // ----------------------------------------------------
-  // REAL-TIME PRICE FEED SIMULATOR TICKER
+  // REAL-TIME PRICE FEED AND TRADE EVALUATOR
   // ----------------------------------------------------
   useEffect(() => {
+    let active = true;
     const handleTick = async () => {
-      // 1. Tick prices
-      setMarketPrices(prev => {
-        const nextPrices = getUpdatedPrices(prev);
+      try {
+        const res = await fetch("/api/market-prices");
+        if (!active) return;
+        const data = await res.json();
+        if (data && data.success && data.spotPrices) {
+          const nextPrices = { ...data.spotPrices };
+          const futuresPrices = data.futuresPrices || {};
 
-        // Update historical tracking blocks
-        setPriceHistories(prevHist => {
-          const nextHist = { ...prevHist };
-          for (const pair in nextPrices) {
-            const arr = prevHist[pair] ? [...prevHist[pair]] : [];
-            arr.push(nextPrices[pair]);
-            if (arr.length > 40) arr.shift(); // keep size bounded
-            nextHist[pair] = arr;
-          }
-          return nextHist;
-        });
+          setMarketPrices(prev => {
+            const combined = { ...prev, ...nextPrices };
+            // Update historical tracking blocks for live chart feeds
+            setPriceHistories(prevHist => {
+              const nextHist = { ...prevHist };
+              for (const pair in combined) {
+                const arr = prevHist[pair] ? [...prevHist[pair]] : [];
+                arr.push(combined[pair]);
+                if (arr.length > 40) arr.shift();
+                nextHist[pair] = arr;
+              }
+              return nextHist;
+            });
+            return combined;
+          });
 
-        // 2. Perform math checks against Take-Profit, Trailing levels and DCA safety orders
-        tickPositions(
-          currentUser.uid,
-          positions,
-          bots,
-          nextPrices,
-          balances,
-          async (updatedPos) => {
-            setPositions(updatedPos);
-          },
-          async (updatedBal) => {
-            setBalances(updatedBal);
-          }
-        ).catch(e => console.error(e));
-
-        return nextPrices;
-      });
+          // Perform math checks against Take-Profit, Trailing levels and DCA safety orders
+          await tickPositions(
+            currentUser.uid,
+            positions,
+            bots,
+            nextPrices,
+            balances,
+            async (updatedPos) => {
+              if (active) setPositions(updatedPos);
+            },
+            async (updatedBal) => {
+              if (active) setBalances(updatedBal);
+            },
+            futuresPrices
+          );
+        }
+      } catch (err) {
+        console.error("Failed to fetch live real-time Binance prices inside loop:", err);
+      }
     };
 
-    const interval = setInterval(handleTick, 3500); // Ticks every 3.5 seconds
-    return () => clearInterval(interval);
-  }, [positions, bots, balances, currentUser]);
+    handleTick();
+    const interval = setInterval(handleTick, globalSettings.priceTickRate || 3500); // Dynamic tick rate
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [positions, bots, balances, currentUser, globalSettings.priceTickRate]);
 
   // Handle active position list for selected pair
   const activePositionForPair = useMemo(() => {
@@ -499,6 +680,34 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
           (p.closeReason && p.closeReason.toLowerCase().includes(q)) ||
           p.type.toLowerCase().includes(q)
       );
+    }
+
+    // Filter by MarketType (Spot/Futures)
+    if (historyMarketType !== "all") {
+      result = result.filter(p => {
+        const isFutures = (p.leverage && p.leverage > 1) || p.marketType === "futures";
+        return historyMarketType === "futures" ? isFutures : !isFutures;
+      });
+    }
+
+    // Filter by Pairs
+    if (historyPairFilter !== "all") {
+      result = result.filter(p => p.pair === historyPairFilter);
+    }
+
+    // Filter by Date Range
+    if (historyDateRange !== "all") {
+      const now = new Date();
+      result = result.filter(p => {
+        if (!p.closedAt) return false;
+        const closedDate = new Date(p.closedAt);
+        const diffMs = now.getTime() - closedDate.getTime();
+        const diffDays = diffMs / (1000 * 60 * 60 * 24);
+        if (historyDateRange === "1d") return diffDays <= 1;
+        if (historyDateRange === "7d") return diffDays <= 7;
+        if (historyDateRange === "30d") return diffDays <= 30;
+        return true;
+      });
     }
 
     // Sort result
@@ -524,7 +733,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     });
 
     return result;
-  }, [closedPositions, historySearchQuery, historySortKey, historySortOrder, globalMode]);
+  }, [closedPositions, historySearchQuery, historySortKey, historySortOrder, globalMode, historyMarketType, historyPairFilter, historyDateRange]);
 
   // Pagination calculation
   const totalItems = filteredClosedPositions.length;
@@ -2186,9 +2395,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     botName: bot.name,
                     pair: bot.pair,
                     action: "buy",
-                    secret: bot.webhookSecret,
-                    TP: bot.takeProfitPercent,
-                    SL: bot.stopLossPercent
+                    secret: bot.webhookSecret
                   }, null, 2);
 
                   const sellPayloadJsonString = JSON.stringify({
@@ -2196,9 +2403,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     botName: bot.name,
                     pair: bot.pair,
                     action: "sell",
-                    secret: bot.webhookSecret,
-                    TP: bot.takeProfitPercent,
-                    SL: bot.stopLossPercent
+                    secret: bot.webhookSecret
                   }, null, 2);
 
                   const safetyPayloadJsonString = JSON.stringify({
@@ -2206,9 +2411,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     botName: bot.name,
                     pair: bot.pair,
                     action: "safety",
-                    secret: bot.webhookSecret,
-                    TP: bot.takeProfitPercent,
-                    SL: bot.stopLossPercent
+                    secret: bot.webhookSecret
                   }, null, 2);
 
                   const payloadJsonString = activeAct === "buy" 
@@ -3072,6 +3275,172 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     ))}
                   </div>
                 )}
+
+                {/* Active Connected Exchanges List */}
+                {currentUser.apiKeys && Object.keys(currentUser.apiKeys).length > 0 && (
+                  <div className="border-t border-slate-800/80 pt-4 mt-4 space-y-2.5">
+                    <h4 className="text-xs uppercase font-mono tracking-wider font-extrabold text-slate-300">
+                      Active API Key Connections
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {Object.keys(currentUser.apiKeys).map((exchangeKey) => {
+                        const credentials = currentUser.apiKeys[exchangeKey];
+                        // Mask the key
+                        const maskedKey = credentials?.apiKey
+                          ? `${credentials.apiKey.slice(0, 6)}...${credentials.apiKey.slice(-4)}`
+                          : "••••••••••••";
+                        return (
+                          <div key={exchangeKey} className="flex justify-between items-center p-2.5 bg-[#0b0e11]/80 rounded-lg border border-slate-800 font-mono text-xs">
+                            <div>
+                              <span className="text-white font-extrabold uppercase text-[10px] block leading-tight">{exchangeKey}</span>
+                              <span className="text-[10px] text-slate-500 block leading-tight">{globalSettings?.hideApiKeys ? "••••••••••••" : maskedKey}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveExchangeKeys(exchangeKey)}
+                              className="px-2 py-1 bg-red-950/20 hover:bg-red-500 hover:text-white text-red-150 border border-red-500/20 rounded font-mono text-[9px] font-bold cursor-pointer transition uppercase"
+                            >
+                              Disconnect
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Global Gateway Settings & Preferences Dashboard */}
+                <div className="border-t border-slate-800/80 pt-5 mt-5">
+                  <h4 className="text-xs uppercase font-mono tracking-wider font-extrabold text-slate-200 mb-2.5 flex items-center justify-between">
+                    <span className="flex items-center gap-2 font-sans font-black">
+                       <Settings className="w-4 h-4 text-emerald-400" />
+                       GLOBAL TRADING PREFERENCES DASHBOARD
+                    </span>
+                    {showAutoSaveTick ? (
+                      <span className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded font-mono font-bold animate-pulse">
+                         ⚡ Auto-Saved
+                      </span>
+                    ) : (
+                      <span className="text-[9px] text-slate-500 font-mono font-bold">Auto-Saves Changes</span>
+                    )}
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mb-4 leading-relaxed font-sans">
+                    Configure unified default parameters applied automatically when compiling signals and booting new DCA/Signal bots. Saved immediately to cloud.
+                  </p>
+
+                  <div className="bg-[#0B0E11]/45 p-4 rounded-xl border border-slate-800/80 space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      {/* Default Leverage */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400 block pb-0.5">Default leverage multiplier</label>
+                        <select
+                          value={globalSettings?.defaultLeverage || 10}
+                          onChange={(e) => {
+                            const newLeverage = parseInt(e.target.value);
+                            handleAutoSaveSettings({ ...globalSettings, defaultLeverage: newLeverage });
+                          }}
+                          className="w-full bg-[#0b0e11] border border-slate-800 focus:border-slate-700 rounded-lg py-1.5 px-2.5 text-xs text-white focus:outline-none"
+                        >
+                          <option value="1">1x (No Leverage)</option>
+                          <option value="3">3x (Low Risk)</option>
+                          <option value="5">5x (Moderate)</option>
+                          <option value="10">10x (Standard)</option>
+                          <option value="20">20x (Agile Risk)</option>
+                          <option value="50">50x (High Risk Futures)</option>
+                        </select>
+                      </div>
+
+                      {/* Default Paper Trading Setting */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400 block pb-0.5">Default Sandbox Simulation</label>
+                        <select
+                          value={globalSettings?.defaultPaperTrading ? "true" : "false"}
+                          onChange={(e) => {
+                            const isPaper = e.target.value === "true";
+                            handleAutoSaveSettings({ ...globalSettings, defaultPaperTrading: isPaper });
+                          }}
+                          className="w-full bg-[#0b0e11] border border-slate-800 focus:border-slate-700 rounded-lg py-1.5 px-2.5 text-xs text-white focus:outline-none"
+                        >
+                          <option value="true">Enable Paper Trading (Risk Free)</option>
+                          <option value="false">Enable Production Mode (Direct keys)</option>
+                        </select>
+                      </div>
+
+                      {/* Default Max Position Size */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400 block pb-0.5">Default Max Position Size (USDT)</label>
+                        <input
+                          type="number"
+                          value={globalSettings?.maxPositionSizeLimit || 25000}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            handleAutoSaveSettings({ ...globalSettings, maxPositionSizeLimit: val });
+                          }}
+                          className="w-full bg-[#0b0e11] border border-slate-800 focus:border-[#0ecb81] rounded-lg py-1.5 px-2.5 text-xs text-white font-mono focus:outline-none"
+                        />
+                      </div>
+
+                      {/* Price Tick Interval Rate */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400 block pb-0.5">Live Price Feed Updates</label>
+                        <select
+                          value={globalSettings?.priceTickRate || 3500}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            handleAutoSaveSettings({ ...globalSettings, priceTickRate: val });
+                          }}
+                          className="w-full bg-[#0b0e11] border border-slate-800 focus:border-slate-700 rounded-lg py-1.5 px-2.5 text-xs text-white focus:outline-none"
+                        >
+                          <option value="1500">Fast Feed (1.5 seconds / tick)</option>
+                          <option value="3500">Normal Feed (3.5 seconds / tick)</option>
+                          <option value="5000">Coarse Feed (5.0 seconds / tick)</option>
+                          <option value="10000">Idle Feed (10.0 seconds / tick)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-[10px] font-mono leading-none text-slate-400">
+                      {/* Notification Sound Toggle */}
+                      <label className="flex items-center gap-2 p-2 bg-[#0b0e11] rounded border border-slate-800/60 cursor-pointer hover:border-slate-700 transition">
+                        <input
+                          type="checkbox"
+                          checked={!!globalSettings?.soundAlertsEnabled}
+                          onChange={(e) => {
+                            handleAutoSaveSettings({ ...globalSettings, soundAlertsEnabled: e.target.checked });
+                          }}
+                          className="w-3.5 h-3.5 accent-emerald-500 cursor-pointer shrink-0"
+                        />
+                        <span>Sound Chimes</span>
+                      </label>
+
+                      {/* Auto-Refill low balance */}
+                      <label className="flex items-center gap-2 p-2 bg-[#0b0e11] rounded border border-slate-800/60 cursor-pointer hover:border-slate-700 transition">
+                        <input
+                          type="checkbox"
+                          checked={!!globalSettings?.autoRefillEnabled}
+                          onChange={(e) => {
+                            handleAutoSaveSettings({ ...globalSettings, autoRefillEnabled: e.target.checked });
+                          }}
+                          className="w-3.5 h-3.5 accent-emerald-500 cursor-pointer shrink-0"
+                        />
+                        <span>Auto-Refill Demo</span>
+                      </label>
+
+                      {/* Hide API Keys */}
+                      <label className="flex items-center gap-2 p-2 bg-[#0b0e11] rounded border border-slate-800/60 cursor-pointer hover:border-slate-700 transition">
+                        <input
+                          type="checkbox"
+                          checked={!!globalSettings?.hideApiKeys}
+                          onChange={(e) => {
+                            handleAutoSaveSettings({ ...globalSettings, hideApiKeys: e.target.checked });
+                          }}
+                          className="w-3.5 h-3.5 accent-emerald-500 cursor-pointer shrink-0"
+                        />
+                        <span>Hide API Keys</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* Connected balances indicators and overview */}
@@ -3351,36 +3720,94 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
             </div>
 
             {/* Filter and Control Toolbar Panel */}
-            <div className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-5 shadow-xl flex flex-col md:flex-row gap-4 items-center justify-between">
+            <div className="bg-[#1E2329] border border-slate-800/80 rounded-xl p-5 shadow-xl flex flex-col xl:flex-row gap-4 items-center justify-between">
               
-              {/* Search input filter */}
-              <div className="relative w-full md:w-80">
-                <Search className="absolute left-3 top-3 w-4 h-4 text-slate-500" />
-                <input
-                  type="text"
-                  placeholder="Filter key (e.g. BTC, DCA, tp)..."
-                  value={historySearchQuery}
-                  onChange={(e) => {
-                    setHistorySearchQuery(e.target.value);
-                    setHistoryPage(1); // Reset page on filter
-                  }}
-                  className="w-full bg-[#0B0E11] border border-slate-850 border-slate-800 rounded-lg pl-9 pr-8 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/80 transition"
-                />
-                {historySearchQuery && (
-                  <button
-                    onClick={() => {
-                      setHistorySearchQuery("");
-                      setHistoryPage(1);
+              <div className="flex flex-wrap items-center gap-3 w-full xl:w-auto">
+                {/* Search input filter */}
+                <div className="relative w-full sm:w-60">
+                  <Search className="absolute left-3 top-3 w-4 h-4 text-slate-500" />
+                  <input
+                    type="text"
+                    placeholder="Search by pair or bot name..."
+                    value={historySearchQuery}
+                    onChange={(e) => {
+                      setHistorySearchQuery(e.target.value);
+                      setHistoryPage(1); // Reset page on filter
                     }}
-                    className="absolute right-3 top-2.5 text-slate-400 hover:text-white text-xs font-bold"
-                  >
-                    ×
-                  </button>
-                )}
+                    className="w-full bg-[#0B0E11] border border-slate-800 rounded-lg pl-9 pr-8 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/80 transition"
+                  />
+                  {historySearchQuery && (
+                    <button
+                      onClick={() => {
+                        setHistorySearchQuery("");
+                        setHistoryPage(1);
+                      }}
+                      className="absolute right-3 top-2.5 text-slate-400 hover:text-white text-xs font-bold"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+
+                {/* Filter Spot vs Futures */}
+                <select
+                  value={historyMarketType}
+                  onChange={(e) => {
+                    setHistoryMarketType(e.target.value as any);
+                    setHistoryPage(1);
+                  }}
+                  className="bg-[#0B0E11] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 shrink-0 cursor-pointer font-sans font-medium"
+                >
+                  <option value="all">🌐 All Accounts</option>
+                  <option value="spot">💰 Spot Trades Only</option>
+                  <option value="futures">⚡ Futures Account</option>
+                </select>
+
+                {/* Dynamic/Smart Pair Selector Filter */}
+                <select
+                  value={historyPairFilter}
+                  onChange={(e) => {
+                    setHistoryPairFilter(e.target.value);
+                    setHistoryPage(1);
+                  }}
+                  className="bg-[#0B0E11] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 shrink-0 cursor-pointer font-sans font-medium"
+                >
+                  <option value="all">🔍 All Symbol Pairs</option>
+                  <option value="BTC/USDT">BTC/USDT (Bitcoin)</option>
+                  <option value="ETH/USDT">ETH/USDT (Ethereum)</option>
+                  <option value="SOL/USDT">SOL/USDT (Solana)</option>
+                  <option value="BNB/USDT">BNB/USDT (Binance Coin)</option>
+                </select>
+
+                {/* Date range filter selector */}
+                <select
+                  value={historyDateRange}
+                  onChange={(e) => {
+                    setHistoryDateRange(e.target.value as any);
+                    setHistoryPage(1);
+                  }}
+                  className="bg-[#0B0E11] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500 shrink-0 cursor-pointer font-sans font-medium"
+                >
+                  <option value="all">📅 All Time Records</option>
+                  <option value="1d">📅 Past 24 Hours</option>
+                  <option value="7d">📅 Past 7 Days</option>
+                  <option value="30d">📅 Past 30 Days</option>
+                </select>
+
+                {/* Clear trade archival records button */}
+                <button
+                  type="button"
+                  onClick={handleClearTradeHistory}
+                  disabled={loadingHistory || closedPositions.length === 0}
+                  className="px-3 py-2 bg-red-950/20 hover:bg-red-500 hover:text-white border border-red-500/25 rounded-lg text-xs font-mono font-bold uppercase transition cursor-pointer flex items-center gap-1.5 shrink-0 disabled:opacity-40"
+                  title="Manually wipe all historic register records"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-500 font-bold shrink-0" /> Clear Archive History
+                </button>
               </div>
 
               {/* Rows limit selection & Pagination navigation elements */}
-              <div className="flex items-center gap-5 w-full md:w-auto justify-between md:justify-end">
+              <div className="flex items-center gap-5 w-full xl:w-auto justify-between xl:justify-end border-t xl:border-t-0 border-slate-800/60 pt-3 xl:pt-0">
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">Per Page:</span>
                   <select
@@ -3389,7 +3816,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       setHistoryLimit(parseInt(e.target.value));
                       setHistoryPage(1);
                     }}
-                    className="bg-[#0B0E11] border border-slate-850 border-slate-800 rounded px-2.5 py-1 text-xs text-slate-200 focus:outline-none"
+                    className="bg-[#0B0E11] border border-slate-800 rounded px-2.5 py-1 text-xs text-slate-200 focus:outline-none"
                   >
                     <option value={5}>5 Rows</option>
                     <option value={10}>10 Rows</option>
@@ -3399,20 +3826,20 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                   </select>
                 </div>
 
-                <div className="flex items-center gap-2 font-mono text-xs text-slate-450 text-slate-450 text-slate-400">
+                <div className="flex items-center gap-2 font-mono text-xs text-slate-400 shrink-0">
                   <span>Page {currentPage} of {totalPages}</span>
                   <div className="inline-flex gap-1">
                     <button
                       onClick={() => setHistoryPage(prev => Math.max(1, prev - 1))}
                       disabled={currentPage <= 1 || loadingHistory}
-                      className="px-2.5 py-1 bg-[#0B0E11] border border-slate-800 rounded text-[10px] font-bold hover:bg-slate-800 disabled:opacity-40"
+                      className="px-2.5 py-1 bg-[#0B0E11] border border-slate-800 rounded text-[10px] font-bold hover:bg-slate-800 disabled:opacity-40 shrink-0"
                     >
                       ◀ Prev
                     </button>
                     <button
                       onClick={() => setHistoryPage(prev => Math.min(totalPages, prev + 1))}
                       disabled={currentPage >= totalPages || loadingHistory}
-                      className="px-2.5 py-1 bg-[#0B0E11] border border-slate-800 rounded text-[10px] font-bold hover:bg-slate-800 disabled:opacity-40"
+                      className="px-2.5 py-1 bg-[#0B0E11] border border-slate-800 rounded text-[10px] font-bold hover:bg-slate-800 disabled:opacity-40 shrink-0"
                     >
                       Next ▶
                     </button>

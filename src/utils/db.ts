@@ -238,5 +238,16 @@ export const dbService = {
     if (!data.success) {
       throw new Error(data.message || "Could not clear persistent system logs.");
     }
+  },
+
+  clearTradeHistory: async (userId: string): Promise<void> => {
+    const res = await fetch(`/api/user/${userId}/positions/clear`, {
+      method: "POST"
+    });
+
+    const data = await res.json();
+    if (!data.success) {
+      throw new Error(data.message || "Could not clear persistent trade history.");
+    }
   }
 };

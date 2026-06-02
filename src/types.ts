@@ -6,6 +6,7 @@ export interface UserProfile {
   balances: Record<string, Record<string, number>>; // exchangeId -> { USDT, BTC, ETH... }
   spotBalances?: Record<string, Record<string, number>>; // exchangeId -> { USDT, BTC, ETH... }
   futuresBalances?: Record<string, Record<string, number>>; // exchangeId -> { USDT, BTC, ETH... }
+  settings?: any;
   createdAt: string;
 }
 
@@ -58,6 +59,7 @@ export interface Position {
   slTriggerPrice: number; // stop-loss threshold price
   pnl: number; // USDT profit size
   pnlPercent: number; // relative ROI
+  leverage?: number; // position leverage if applicable
   paperTrading?: boolean; // toggle for sandbox separation
   exchange?: string; // target market exchange
   createdAt: string;

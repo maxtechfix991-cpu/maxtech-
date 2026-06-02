@@ -45,7 +45,8 @@ export async function tickPositions(
   prices: Record<string, number>,
   userBalances: Record<string, Record<string, number>>,
   onPositionsUpdated: (updatedList: Position[]) => void,
-  onBalancesUpdated: (updatedBal: Record<string, Record<string, number>>) => void
+  onBalancesUpdated: (updatedBal: Record<string, Record<string, number>>) => void,
+  futuresPrices?: Record<string, number>
 ): Promise<void> {
   if (positions.length === 0) return;
 
@@ -56,7 +57,11 @@ export async function tickPositions(
     const pos = { ...nextPositions[i] };
     if (pos.status === "closed") continue;
 
-    const currentPrice = prices[pos.pair];
+    const isFutures = (pos.leverage && pos.leverage > 1);
+    const currentPrice = isFutures 
+      ? (futuresPrices && futuresPrices[pos.pair]) || prices[pos.pair]
+      : prices[pos.pair];
+
     if (!currentPrice) continue;
 
     // Update real-time metrics
@@ -197,13 +202,17 @@ export async function tickPositions(
 
       // Settle Virtual Balances
       const returnUsdt = pos.totalInvested + pos.pnl;
-      const matchedExchange = "binance"; // Simulated default exchange
+      const matchedExchange = pos.exchange || "binance";
 
       const nextBal = { ...userBalances };
       if (!nextBal[matchedExchange]) nextBal[matchedExchange] = { USDT: 0 };
       nextBal[matchedExchange].USDT = parseFloat((nextBal[matchedExchange].USDT + returnUsdt).toFixed(2));
       onBalancesUpdated(nextBal);
-      await dbService.updateUserProfile(userId, { balances: nextBal });
+      await dbService.updateUserProfile(userId, { 
+        balances: nextBal,
+        spotBalances: nextBal,
+        futuresBalances: nextBal
+      });
 
       // Save database entry
       await dbService.savePosition(pos);
@@ -245,7 +254,7 @@ export async function tickPositions(
       if (isSafetyTriggered) {
         // Trigger Safety scale-in!
         const safetySize = bot.safetyOrderSize;
-        const matchedExchange = "binance";
+        const matchedExchange = pos.exchange || "binance";
 
         // Check if available balance supports buying safety order
         const currentUsdt = userBalances[matchedExchange]?.USDT || 0;
@@ -254,7 +263,11 @@ export async function tickPositions(
           const nextBal = { ...userBalances };
           nextBal[matchedExchange].USDT = parseFloat((nextBal[matchedExchange].USDT - safetySize).toFixed(2));
           onBalancesUpdated(nextBal);
-          await dbService.updateUserProfile(userId, { balances: nextBal });
+          await dbService.updateUserProfile(userId, { 
+            balances: nextBal,
+            spotBalances: nextBal,
+            futuresBalances: nextBal
+          });
 
           // Accumulate positions
           const addedAmount = safetySize / currentPrice;
