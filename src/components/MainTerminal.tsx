@@ -2030,6 +2030,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         <th>Live Price</th>
                         <th>Target TP Price</th>
                         <th>Target SL Price</th>
+                        <th>Position & Margin Required</th>
                         <th>Profit / Loss</th>
                         <th>Safety Orders</th>
                         <th className="text-right">Manage Exit</th>
@@ -2095,6 +2096,19 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                                 )}
                               </td>
                               <td>
+                                <div className="flex flex-col gap-0.5 leading-tight">
+                                  <span className="text-white font-extrabold text-xs">
+                                    ${(p.totalInvested || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </span>
+                                  <span className="text-[10px] text-slate-400">
+                                    Margin: ${(p.marginLocked || ((p.totalInvested || 0) / (p.leverage || 1))).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                    <span className="bg-[#1e2329] border border-slate-850 text-white font-mono px-1 py-0.2 rounded ml-1 text-[8px] font-bold">
+                                      {p.leverage || 1}x
+                                    </span>
+                                  </span>
+                                </div>
+                              </td>
+                              <td>
                                 <div className={p.pnlPercent >= 0 ? "text-emerald-400" : "text-red-400"}>
                                   <span className="font-black text-xs">{p.pnlPercent >= 0 ? "+" : ""}{p.pnlPercent.toFixed(2)}%</span>
                                   <span className="text-[10px] text-slate-400 ml-1.5 font-sans font-medium">({p.pnl >= 0 ? "+" : ""}${Math.abs(p.pnl).toFixed(2)})</span>
@@ -2146,7 +2160,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             {/* Sub-Panel Inline custom Target SL/TP form drawer */}
                             {isEditingThis && (
                               <tr className="bg-[#14151a]/95 border-b border-l border-r border-[#0ecb81]/20">
-                                <td colSpan={9} className="p-4 bg-gradient-to-r from-[#14151a] to-[#1a1c24]">
+                                <td colSpan={10} className="p-4 bg-gradient-to-r from-[#14151a] to-[#1a1c24]">
                                   <div className="space-y-4">
                                     {/* Header info */}
                                     <div className="flex justify-between items-center pb-2 border-b border-slate-800/80">
@@ -2662,6 +2676,51 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     />
                     <p className="text-[10px] text-slate-500 font-mono">Halts live triggers if exchange capital drops below this level.</p>
                   </div>
+                </div>
+
+                {/* Dynamic Real-time Calculations Panel */}
+                <div className="mt-3 p-4 bg-[#0B0E11]/80 rounded-xl border border-slate-800/80 space-y-3 font-sans animate-fadeIn">
+                  <div className="flex justify-between items-center border-b border-slate-800/50 pb-2">
+                    <span className="text-[10px] uppercase font-mono tracking-widest font-extrabold text-slate-400">Live Dynamic Position & Margin Estimations</span>
+                    <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 rounded font-mono uppercase font-black">
+                      {botLeverage}x Enabled
+                    </span>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-400">Initial Position Size (Base Order):</span>
+                        <span className="text-white font-mono font-bold">${botBaseOrder.toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-400 font-semibold">Initial Margin Required:</span>
+                        <span className="text-emerald-400 font-mono font-black border border-emerald-500/25 px-1.5 py-0.5 rounded bg-emerald-950/20">
+                          ${(botBaseOrder / botLeverage).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                        </span>
+                      </div>
+                    </div>
+
+                    {botType === "dca" && (
+                      <div className="space-y-1.5 border-t md:border-t-0 md:border-l border-slate-800/60 pt-3 md:pt-0 md:pl-4">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-slate-400">Max Cumulative Position Exposure:</span>
+                          <span className="text-white font-mono font-bold">
+                            ${(botBaseOrder + (botSafetyOrder * botMaxSafety)).toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-slate-400 font-semibold">Max Margin Requirement (Locked):</span>
+                          <span className="text-emerald-350 border border-emerald-500/25 px-1.5 py-0.5 rounded bg-slate-900/40 font-mono font-bold text-emerald-300">
+                            ${((botBaseOrder + (botSafetyOrder * botMaxSafety)) / botLeverage).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-500 font-mono leading-relaxed pt-1">
+                    ⚡ The margin ratio is automatically set to {botLeverage}x. Your exchange account only locks the Required Margin corresponding to your actual entry position size rather than any arbitrary fixed amount.
+                  </p>
                 </div>
               </div>
 
@@ -3485,6 +3544,48 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         </div>
                       </div>
 
+                    </div>
+
+                    {/* Live Dynamic Calculations Preview - Edit Mode */}
+                    <div className="p-4 bg-[#0B0E11]/80 rounded-xl border border-slate-800/80 space-y-3 font-sans">
+                      <div className="flex justify-between items-center border-b border-slate-800/50 pb-2">
+                        <span className="text-[10px] uppercase font-mono tracking-widest font-extrabold text-slate-400">Live Edited Position & Margin Estimations</span>
+                        <span className="text-[9px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.2 rounded font-mono uppercase font-black">
+                          {editBotLeverage}x Mode
+                        </span>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-slate-400">Initial Position Size (Base Order):</span>
+                            <span className="text-white font-mono font-bold">${editBotBaseOrder.toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT</span>
+                          </div>
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-slate-400 font-semibold">Initial Margin Required:</span>
+                            <span className="text-emerald-400 font-mono font-black border border-emerald-500/25 px-1.5 py-0.5 rounded bg-emerald-950/20">
+                              ${(editBotBaseOrder / editBotLeverage).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                            </span>
+                          </div>
+                        </div>
+
+                        {editingBot.type === "dca" && (
+                          <div className="space-y-1.5 border-t md:border-t-0 md:border-l border-slate-800/60 pt-3 md:pt-0 md:pl-4">
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-slate-400">Max Cumulative Position Exposure:</span>
+                              <span className="text-white font-mono font-bold">
+                                ${(editBotBaseOrder + (editBotSafetyOrder * editBotMaxSafety)).toLocaleString(undefined, { minimumFractionDigits: 2 })} USDT
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-slate-400 font-semibold">Max Margin Requirement (Locked):</span>
+                              <span className="text-emerald-355 border border-emerald-500/25 px-1.5 py-0.5 rounded bg-slate-900/40 font-mono font-bold text-emerald-300">
+                                ${((editBotBaseOrder + (editBotSafetyOrder * editBotMaxSafety)) / editBotLeverage).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     {/* Actions Row */}
@@ -4738,12 +4839,14 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       <thead>
                         <tr className="bg-[#0B0E11]/90 border-b border-slate-800 uppercase text-slate-400 font-mono tracking-wider text-[10px]">
                           <th className="py-3 px-4">Bot Strategy</th>
-                          <th className="py-3 px-4">Instrument / Type</th>
+                          <th className="py-3 px-4">Instrument</th>
                           <th className="py-3 px-4">Direction</th>
                           <th className="py-3 px-4 text-right">Entry Price</th>
                           <th className="py-3 px-4 text-right">Mark Price</th>
-                          <th className="py-3 px-4 text-right">Collateral Size</th>
-                          <th className="py-3 px-4 text-right">ROI % / PnL</th>
+                          <th className="py-3 px-4 text-right">Target TP Price</th>
+                          <th className="py-3 px-4 text-right">Target SL Price</th>
+                          <th className="py-3 px-4 text-right">Position & Margin</th>
+                          <th className="py-3 px-4 text-right">Profit / Loss</th>
                           <th className="py-3 px-4 text-center">Safety Fills</th>
                           <th className="py-3 px-4 text-right">Action</th>
                         </tr>
@@ -4758,14 +4861,31 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                               <td className="py-3 px-4 uppercase text-slate-300 font-bold">{p.pair}</td>
                               <td className="py-3 px-4">
                                 <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
-                                  isLong ? "bg-emerald-950 text-emerald-400 border border-emerald-500/25" : "bg-red-950 text-red-450 border border-red-500/25"
+                                  isLong ? "bg-emerald-950 text-emerald-400 border border-emerald-500/25" : "bg-red-950 text-red-485 border border-red-500/25"
                                 }`}>
                                   {p.type.toUpperCase()}
                                 </span>
                               </td>
-                              <td className="py-3 px-4 text-right text-slate-200">${p.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })}</td>
-                              <td className="py-3 px-4 text-right text-emerald-400 font-bold">${p.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })}</td>
-                              <td className="py-3 px-4 text-right text-slate-300">${p.totalInvested.toLocaleString()} USDT</td>
+                              <td className="py-3 px-4 text-right text-slate-200">${p.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}</td>
+                              <td className="py-3 px-4 text-right text-emerald-400 font-bold">${p.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}</td>
+                              <td className="py-3 px-4 text-right text-emerald-400 font-bold">${p.tpTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}</td>
+                              <td className="py-3 px-4 text-right">
+                                {p.slTriggerPrice > 0 ? (
+                                  <span className="text-red-400 font-bold">${p.slTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}</span>
+                                ) : (
+                                  <span className="text-slate-500 italic">No SL set</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                <div className="flex flex-col items-end gap-0.5 leading-tight">
+                                  <span className="text-white font-extrabold text-xs">
+                                    ${(p.totalInvested || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                                  </span>
+                                  <span className="text-[10px] text-slate-400">
+                                    Margin: ${(p.marginLocked || ((p.totalInvested || 0) / (p.leverage || 1))).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT ({p.leverage || 1}x)
+                                  </span>
+                                </div>
+                              </td>
                               <td className="py-3 px-4 text-right">
                                 <div className="flex flex-col items-end leading-normal">
                                   <span className={`text-[13px] font-black ${p.pnlPercent >= 0 ? "text-emerald-400" : "text-red-400"}`}>
