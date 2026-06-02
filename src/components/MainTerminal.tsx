@@ -2028,10 +2028,10 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         <th>Currency</th>
                         <th>Weighted Entry</th>
                         <th>Live Price</th>
-                        <th>Safety Order Count</th>
-                        <th>PnL (USDT)</th>
-                        <th>Live ROI %</th>
-                        <th>Trigger Stops</th>
+                        <th>Target TP Price</th>
+                        <th>Target SL Price</th>
+                        <th>Profit / Loss</th>
+                        <th>Safety Orders</th>
                         <th className="text-right">Manage Exit</th>
                       </tr>
                     </thead>
@@ -2074,6 +2074,33 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                               <td>${p.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}</td>
                               <td className="text-white font-extrabold">${p.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}</td>
                               <td>
+                                <div className="flex flex-col gap-0.5">
+                                  <span className="text-emerald-450 text-emerald-400 font-bold">
+                                    ${p.tpTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}
+                                  </span>
+                                  {p.trailingTpPercent !== undefined && p.trailingTpPercent > 0 && (
+                                    <span className="text-[8px] uppercase tracking-wider font-extrabold text-amber-500 bg-amber-500/10 px-1 py-0.2 rounded w-max">
+                                      {p.trailingTpActive ? "🔥 Trail Active" : `Trail: ${p.trailingTpPercent}%`}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td>
+                                {p.slTriggerPrice > 0 ? (
+                                  <span className="text-red-450 text-red-400 font-bold">
+                                    ${p.slTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500 italic">No SL set</span>
+                                )}
+                              </td>
+                              <td>
+                                <div className={p.pnlPercent >= 0 ? "text-emerald-400" : "text-red-400"}>
+                                  <span className="font-black text-xs">{p.pnlPercent >= 0 ? "+" : ""}{p.pnlPercent.toFixed(2)}%</span>
+                                  <span className="text-[10px] text-slate-400 ml-1.5 font-sans font-medium">({p.pnl >= 0 ? "+" : ""}${Math.abs(p.pnl).toFixed(2)})</span>
+                                </div>
+                              </td>
+                              <td>
                                 {botRef?.type === "dca" ? (
                                   <span className="bg-[#0B0E11] border border-slate-800 px-2 py-0.5 rounded text-white font-mono">
                                     {p.safetyOrdersCount} / {botRef.maxSafetyOrders} fills
@@ -2081,31 +2108,6 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                                 ) : (
                                   <span className="text-slate-500">N/A (Signal Only)</span>
                                 )}
-                              </td>
-                              <td className={p.pnl >= 0 ? "text-emerald-400" : "text-red-400"}>
-                                ${p.pnl >= 0 ? "+" : ""}{p.pnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
-                              </td>
-                              <td className={`font-black ${p.pnlPercent >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                                {p.pnlPercent >= 0 ? "+" : ""}{p.pnlPercent.toFixed(2)}%
-                              </td>
-                              <td>
-                                <div className="flex flex-col gap-0.5 text-[9px] text-slate-400">
-                                  {p.trailingTpPercent !== undefined && p.trailingTpPercent > 0 && (
-                                    <span className="text-[8px] uppercase tracking-wider font-extrabold text-[#0ecb81] bg-[#02c076]/10 px-1 py-0.2 rounded w-max mb-0.5">
-                                      Trail: {p.trailingTpPercent}%
-                                    </span>
-                                  )}
-                                  <span className={`${p.trailingTpActive ? "text-amber-400 font-extrabold animate-pulse" : "text-emerald-400/90 font-bold"}`}>
-                                    {p.trailingTpActive ? "🔥 Trailing Profit Active" : `⭐ TP Target @ $${p.tpTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}`}
-                                  </span>
-                                  {p.slTriggerPrice > 0 ? (
-                                    <span className="text-red-400/90 font-bold">
-                                      🛑 Stop Loss SL @ ${p.slTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}
-                                    </span>
-                                  ) : (
-                                    <span className="text-slate-500 font-medium italic">No Stop Loss set</span>
-                                  )}
-                                </div>
                               </td>
                               <td className="text-right py-3">
                                 <div className="inline-flex gap-1.5">
