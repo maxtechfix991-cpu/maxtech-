@@ -19,7 +19,7 @@ import {
   Compass,
   Link,
   Shield, Check, ArrowUpRight, ArrowDownRight, User,
-  Edit, Copy, Search, Sliders, Globe, AlertTriangle, ShieldAlert, XCircle, History, Briefcase, TrendingUp, Radio, ArrowLeftRight
+  Edit, Copy, Search, Sliders, Globe, AlertTriangle, ShieldAlert, XCircle, History, Briefcase, TrendingUp, Radio, ArrowLeftRight, Download
 } from "lucide-react";
 
 interface MainTerminalProps {
@@ -58,6 +58,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   const [historyMarketType, setHistoryMarketType] = useState<"all" | "spot" | "futures">("all");
   const [historyPairFilter, setHistoryPairFilter] = useState<string>("all");
   const [historyDateRange, setHistoryDateRange] = useState<"all" | "1d" | "7d" | "30d">("all");
+  const [historyAutoRefresh, setHistoryAutoRefresh] = useState<boolean>(false);
 
   // Global customizable preferences & defaults (Auto-Saves to cloud)
   const [globalSettings, setGlobalSettings] = useState(() => {
@@ -68,6 +69,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
       soundAlertsEnabled: true,
       autoRefillEnabled: true,
       priceTickRate: 3500,
+      dbSyncRate: 10000,
       hideApiKeys: false
     };
     return { ...fallbackSettings, ...(user.settings || {}) };
@@ -104,6 +106,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   const [editBotTrailingSL, setEditBotTrailingSL] = useState(false);
   const [editBotTrailingTpEnabled, setEditBotTrailingTpEnabled] = useState(true);
   const [editPairSearchQuery, setEditPairSearchQuery] = useState("");
+  const [editBotLeverage, setEditBotLeverage] = useState<number>(1);
 
   // Copy indicators state & Webhook Payload Action toggles
   const [copiedStates, setCopiedStates] = useState<Record<string, boolean>>({});
@@ -414,6 +417,11 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     fetchLiveFuturesPairs();
   }, []);
 
+  const historyAutoRefreshRef = useRef(historyAutoRefresh);
+  useEffect(() => {
+    historyAutoRefreshRef.current = historyAutoRefresh;
+  }, [historyAutoRefresh]);
+
   // ----------------------------------------------------
   // REAL-TIME FIRESTORE BACKGROUND SYNCHRONIZATION ENGINE
   // ----------------------------------------------------
@@ -429,7 +437,9 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
       
       setBots(loadedBots);
       setPositions(loadedPos.filter(p => p.status === "open"));
-      setClosedPositions(loadedPos.filter(p => p.status === "closed"));
+      if (isInitial || historyAutoRefreshRef.current) {
+        setClosedPositions(loadedPos.filter(p => p.status === "closed"));
+      }
       setLogs(loadedLogs);
 
       if (updatedProfile && updatedProfile.balances) {
@@ -452,9 +462,9 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     syncStateWithDatabase(true);
 
     // Dynamic background poll interval (every 4000ms) to capture external webhook runs automatically
-    const syncInterval = setInterval(() => syncStateWithDatabase(false), 4000);
+    const syncInterval = setInterval(() => syncStateWithDatabase(false), globalSettings.dbSyncRate || 10000);
     return () => clearInterval(syncInterval);
-  }, [currentUser?.uid]);
+  }, [currentUser?.uid, globalSettings.dbSyncRate]);
 
   // Fetch closed positions from the database
   const loadTradeHistory = async () => {
@@ -492,6 +502,97 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
       triggerNotification("Failed to clear trade history.", "error");
     } finally {
       setLoadingHistory(false);
+    }
+  };
+
+  // Export current filtered closed positions/deals ledger
+  const handleExportTradeHistory = (format: "csv" | "json") => {
+    if (filteredClosedPositions.length === 0) {
+      triggerNotification("No closed deals found matching the current filters to export.", "info");
+      return;
+    }
+
+    try {
+      let dataStr = "";
+      let mimeType = "";
+      let filename = "";
+
+      if (format === "json") {
+        dataStr = JSON.stringify(filteredClosedPositions, null, 2);
+        mimeType = "application/json";
+        filename = `apex_trade_ledger_${new Date().toISOString().slice(0, 10)}.json`;
+      } else {
+        // Full CSV ledger implementation
+        const csvHeaders = [
+          "ID",
+          "Bot Name",
+          "Symbol Pair",
+          "Order Direction",
+          "Market Mode",
+          "Target Exchange",
+          "Entry Price",
+          "Final Quantity",
+          "Total Allocation (USDT)",
+          "Multiplier Leverage",
+          "DCA Increments Completed",
+          "Reason Terminated",
+          "Realized Profit/Loss (USDT)",
+          "Net Return on Investment (%)",
+          "Durable Paper Sandbox",
+          "Position Logged At",
+          "Position Closed At"
+        ];
+
+        const rows = filteredClosedPositions.map(p => [
+          p.id,
+          p.botName,
+          p.pair,
+          p.type.toUpperCase(),
+          p.marketType || "spot",
+          p.exchange || "binance",
+          p.entryPrice,
+          p.amount,
+          p.totalInvested,
+          p.leverage || 1,
+          p.safetyOrdersCount,
+          p.closeReason || "unknown",
+          p.pnl.toFixed(4),
+          p.pnlPercent.toFixed(2),
+          p.paperTrading ? "SANDBOX" : "LIVE",
+          p.createdAt,
+          p.closedAt || ""
+        ]);
+
+        const csvContent = [
+          csvHeaders.join(","),
+          ...rows.map(r => r.map(columnVal => {
+            const strVal = String(columnVal);
+            if (strVal.includes(",") || strVal.includes("\n") || strVal.includes('"')) {
+              return `"${strVal.replace(/"/g, '""')}"`;
+            }
+            return strVal;
+          }).join(","))
+        ].join("\n");
+
+        dataStr = csvContent;
+        mimeType = "text/csv;charset=utf-8;";
+        filename = `apex_trade_ledger_${new Date().toISOString().slice(0, 10)}.csv`;
+      }
+
+      const blob = new Blob([dataStr], { type: mimeType });
+      const dlUrl = URL.createObjectURL(blob);
+      const tempLink = document.createElement("a");
+      tempLink.setAttribute("href", dlUrl);
+      tempLink.setAttribute("download", filename);
+      tempLink.style.visibility = "hidden";
+      document.body.appendChild(tempLink);
+      tempLink.click();
+      document.body.removeChild(tempLink);
+
+      triggerNotification(`Successfully compiled and downloaded ${filteredClosedPositions.length} deals in ${format.toUpperCase()} format.`, "success");
+    } catch (e: any) {
+      console.error("Export error:", e);
+      triggerNotification("Export operation failed: " + e.message, "error");
     }
   };
 
@@ -604,6 +705,30 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   }, [currentUser?.uid, globalSettings.priceTickRate]);
 
   // ----------------------------------------------------
+  // RENDER-STABLE VALUE TRACKERS FOR REAL-TIME EVALUATION
+  // ----------------------------------------------------
+  const positionsRef = useRef(positions);
+  const botsRef = useRef(bots);
+  const balancesRef = useRef(balances);
+  const currentUserRef = useRef(currentUser);
+
+  useEffect(() => {
+    positionsRef.current = positions;
+  }, [positions]);
+
+  useEffect(() => {
+    botsRef.current = bots;
+  }, [bots]);
+
+  useEffect(() => {
+    balancesRef.current = balances;
+  }, [balances]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  // ----------------------------------------------------
   // REAL-TIME PRICE FEED AND TRADE EVALUATOR
   // ----------------------------------------------------
   useEffect(() => {
@@ -633,13 +758,15 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
             return combined;
           });
 
+          if (!currentUserRef.current || !currentUserRef.current.uid) return;
+
           // Perform math checks against Take-Profit, Trailing levels and DCA safety orders
           await tickPositions(
-            currentUser.uid,
-            positions,
-            bots,
+            currentUserRef.current.uid,
+            positionsRef.current,
+            botsRef.current,
             nextPrices,
-            balances,
+            balancesRef.current,
             async (updatedPos) => {
               if (active) setPositions(updatedPos);
             },
@@ -657,10 +784,10 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     handleTick();
     const interval = setInterval(handleTick, globalSettings.priceTickRate || 3500); // Dynamic tick rate
     return () => {
-      active = false;
-      clearInterval(interval);
+       active = false;
+       clearInterval(interval);
     };
-  }, [positions, bots, balances, currentUser, globalSettings.priceTickRate]);
+  }, [globalSettings.priceTickRate]);
 
   // Handle active position list for selected pair
   const activePositionForPair = useMemo(() => {
@@ -1156,6 +1283,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     setEditBotTrailingTpEnabled(bot.trailingTpPercent !== undefined && bot.trailingTpPercent > 0);
     setEditBotStopLoss(bot.stopLossPercent || 3.0);
     setEditBotTrailingSL(bot.trailingSlEnabled ?? false);
+    setEditBotLeverage(bot.leverage || 1);
     setEditPairSearchQuery("");
   };
 
@@ -1195,6 +1323,7 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
         trailingTpPercent: editBotTrailingTpEnabled ? editBotTrailingProfit : 0,
         stopLossPercent: editBotStopLoss,
         trailingSlEnabled: editBotTrailingSL,
+        leverage: editBotLeverage,
       };
 
       await dbService.saveBot(updatedBot);
@@ -1744,8 +1873,12 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                         <span className="text-[10px] font-mono text-slate-500 block uppercase font-bold tracking-wider">Active Leverage Factor</span>
                         <span className="text-xl font-bold font-mono text-white tracking-widest">{selectedLeverage}X</span>
                       </div>
-                      <span className={`px-2 py-0.5 font-mono text-[9px] font-bold rounded ${selectedLeverage > 50 ? "bg-red-500/10 text-red-400 border border-red-500/20" : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/10"}`}>
-                        {selectedLeverage > 50 ? "HIGH LEVERAGE" : "SAFE RATIO"}
+                      <span className={`px-2 py-0.5 font-mono text-[9px] font-bold rounded ${
+                        selectedLeverage > 100 ? "bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse" :
+                        selectedLeverage > 50 ? "bg-amber-500/10 text-amber-400 border border-amber-550/20" :
+                        "bg-emerald-500/10 text-emerald-400 border border-emerald-500/10"
+                      }`}>
+                        {selectedLeverage > 100 ? "EXTREME VOLATILITY" : selectedLeverage > 50 ? "HIGH LEVERAGE" : "SAFE RATIO"}
                       </span>
                     </div>
 
@@ -1757,18 +1890,18 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                       <input
                         type="range"
                         min="1"
-                        max="125"
+                        max="200"
                         step="1"
                         value={selectedLeverage}
                         onChange={(e) => setSelectedLeverage(parseInt(e.target.value))}
                         className="w-full accent-emerald-500 cursor-pointer h-1.5 bg-[#0B0E11] rounded-lg border-none"
                       />
-                      <div className="flex justify-between text-[9px] font-mono text-slate-550 text-slate-500">
+                      <div className="flex justify-between text-[9px] font-mono text-slate-500">
                         <span>1x</span>
-                        <span>20x</span>
                         <span>50x</span>
                         <span>100x</span>
-                        <span>125x Max</span>
+                        <span>150x</span>
+                        <span>200x Max</span>
                       </div>
                     </div>
                   </div>
@@ -2146,21 +2279,48 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
               <div className="pt-4 border-t border-slate-800/60 space-y-3">
                 <h3 className="text-xs uppercase font-mono font-bold tracking-widest text-[#0ecb81] text-emerald-400">Algorithmic Risk Management</h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-400">Leverage Multiplier</label>
-                    <select
+                  <div className="space-y-1.5 bg-[#0b0e11]/50 p-3 rounded-lg border border-slate-800/80">
+                    <label className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-300 block">Leverage: <span className="text-white font-extrabold font-mono text-sm">{botLeverage}x</span></label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="200"
+                      step="1"
                       value={botLeverage}
-                      onChange={(e) => setBotLeverage(Math.max(1, parseInt(e.target.value) || 1))}
-                      className="w-full bg-[#0B0E11] border border-slate-800/80 rounded-lg py-2 px-3 text-sm text-white focus:outline-none focus:border-emerald-500 cursor-pointer font-mono"
-                    >
-                      <option value="1">1x (Spot / No Leverage)</option>
-                      <option value="3">3x Leverage</option>
-                      <option value="5">5x Leverage</option>
-                      <option value="10">10x Leverage</option>
-                      <option value="20">20x Leverage</option>
-                      <option value="50">50x Leverage (Futures High-Risk)</option>
-                    </select>
-                    <p className="text-[10px] text-slate-500 font-mono">Controls funding margins locked on active operations.</p>
+                      onChange={(e) => setBotLeverage(Math.min(200, Math.max(1, parseInt(e.target.value) || 1)))}
+                      className="w-full accent-emerald-500 cursor-pointer h-1.5 bg-[#181A20] rounded-lg border-none"
+                    />
+                    <div className="flex justify-between text-[8px] font-mono text-slate-500 leading-none">
+                      <span>1x</span>
+                      <span>50x</span>
+                      <span>100x</span>
+                      <span>150x</span>
+                      <span>200x</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <input
+                        type="number"
+                        min="1"
+                        max="200"
+                        value={botLeverage}
+                        onChange={(e) => setBotLeverage(Math.min(200, Math.max(1, parseInt(e.target.value) || 1)))}
+                        className="bg-[#0B0E11] text-[11px] font-mono font-bold text-white border border-slate-800 rounded py-1 px-1.5 w-14 focus:outline-none focus:border-emerald-500"
+                      />
+                      <span className={`px-2 py-0.5 text-[8px] font-mono font-extrabold uppercase rounded ${
+                        botLeverage === 1 ? "bg-slate-800 text-slate-400" :
+                        botLeverage <= 10 ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/10" :
+                        botLeverage <= 50 ? "bg-yellow-500/15 text-yellow-500 border border-yellow-500/10" :
+                        botLeverage <= 100 ? "bg-orange-500/15 text-orange-400 border border-orange-500/15" :
+                        "bg-red-500/20 text-red-400 border border-red-500/20 animate-pulse"
+                      }`}>
+                        {botLeverage === 1 ? "Spot" :
+                         botLeverage <= 10 ? "Low Risk" :
+                         botLeverage <= 50 ? "Active Risk" :
+                         botLeverage <= 100 ? "Elevated" :
+                         "EXTREME (200x)"}
+                      </span>
+                    </div>
+                    <p className="text-[9px] text-slate-500 font-mono leading-tight pt-1">Balances locked Margin automatically at entry point.</p>
                   </div>
 
                   <div className="space-y-1">
@@ -2776,6 +2936,64 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                             required
                           />
                           <span className="font-mono text-slate-500">USDT</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Dynamic Leverage Configurator - Edit Mode */}
+                    <div className="p-4 bg-[#181A20]/80 rounded-xl border border-slate-800/80 space-y-3">
+                      <div className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider font-mono flex items-center gap-1.5 mb-1 font-sans">
+                        <Sliders className="w-3.5 h-3.5" />
+                        Dynamic Leverage Configurator (1x - 200x)
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-[11px] text-slate-400 font-sans">
+                            <span>Adjust Leverage Ratio</span>
+                            <span className="font-mono text-white font-extrabold">{editBotLeverage}x Factor</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="1"
+                            max="200"
+                            step="1"
+                            value={editBotLeverage}
+                            onChange={(e) => setEditBotLeverage(Math.min(200, Math.max(1, parseInt(e.target.value) || 1)))}
+                            className="w-full accent-emerald-500 cursor-pointer h-1.5 bg-[#0b0e11] rounded-lg border-none"
+                          />
+                          <div className="flex justify-between text-[8px] font-mono text-slate-500">
+                            <span>1x</span>
+                            <span>50x</span>
+                            <span>100x</span>
+                            <span>150x</span>
+                            <span>200x Max</span>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider block font-sans">Or Enter Manual Multiplier</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min="1"
+                              max="200"
+                              value={editBotLeverage}
+                              onChange={(e) => setEditBotLeverage(Math.min(200, Math.max(1, parseInt(e.target.value) || 1)))}
+                              className="bg-[#0b0e11] text-xs font-mono font-bold text-white border border-slate-800 rounded-lg py-1.5 px-3 w-28 focus:outline-none focus:border-emerald-500"
+                            />
+                            <span className={`px-2 py-1 text-[9px] font-mono font-extrabold uppercase rounded shrink-0 ${
+                              editBotLeverage === 1 ? "bg-slate-800 text-slate-400" :
+                              editBotLeverage <= 10 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" :
+                              editBotLeverage <= 50 ? "bg-yellow-500/10 text-yellow-500 border border-yellow-500/20" :
+                              editBotLeverage <= 100 ? "bg-orange-500/10 text-orange-400 border border-orange-500/20" :
+                              "bg-red-500/15 text-red-400 border border-red-500/20 animate-pulse"
+                            }`}>
+                              {editBotLeverage === 1 ? "Spot (1x)" :
+                               editBotLeverage <= 10 ? "Low Risk" :
+                               editBotLeverage <= 50 ? "Active Risk" :
+                               editBotLeverage <= 100 ? "Elevated" :
+                               "EXTREME (200x)"}
+                            </span>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -3397,6 +3615,24 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                           <option value="10000">Idle Feed (10.0 seconds / tick)</option>
                         </select>
                       </div>
+
+                      {/* Cloud Sync Frequency Interval Rate */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] uppercase font-mono tracking-wider font-semibold text-slate-400 block pb-0.5">Database Cloud Polling Sync</label>
+                        <select
+                          value={globalSettings?.dbSyncRate || 10000}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            handleAutoSaveSettings({ ...globalSettings, dbSyncRate: val });
+                          }}
+                          className="w-full bg-[#0b0e11] border border-slate-800 focus:border-slate-700 rounded-lg py-1.5 px-2.5 text-xs text-white focus:outline-none"
+                        >
+                          <option value="4000">Aggressive Sync (4 seconds)</option>
+                          <option value="10000">Normal Sync (10 seconds - High Performance)</option>
+                          <option value="20000">Balanced Sync (20 seconds - Recommended)</option>
+                          <option value="45000">ECO Saver Mode (45 seconds - Lowest Latency)</option>
+                        </select>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-[10px] font-mono leading-none text-slate-400">
@@ -3804,6 +4040,54 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                 >
                   <Trash2 className="w-3.5 h-3.5 text-red-500 font-bold shrink-0" /> Clear Archive History
                 </button>
+
+                {/* Secure Auto-Refresh Controller Selector */}
+                <label className="inline-flex items-center gap-2 px-3 py-2 bg-[#0B0E11] hover:bg-slate-800 border border-slate-800 hover:border-slate-700 rounded-lg text-xs font-semibold text-slate-200 select-none cursor-pointer transition">
+                  <input
+                    type="checkbox"
+                    checked={historyAutoRefresh}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      setHistoryAutoRefresh(enabled);
+                      if (enabled) {
+                        triggerNotification("Archival Auto-Refresh Enabled.", "info");
+                      } else {
+                        triggerNotification("Archival Auto-Refresh Disabled. Deals will only refresh on-demand.", "info");
+                      }
+                    }}
+                    className="w-3.5 h-3.5 rounded border-slate-800 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 bg-[#0B0E11] cursor-pointer"
+                  />
+                  <span>🔄 Auto-Refresh</span>
+                </label>
+
+                {/* Export trade data dropdown action panel */}
+                <div className="relative group inline-block">
+                  <button
+                    type="button"
+                    className="px-3 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-semibold rounded-lg text-xs transition cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Export Ledger</span>
+                  </button>
+                  <div className="invisible group-hover:visible hover:visible opacity-0 group-hover:opacity-100 transition-all duration-150 absolute left-0 bottom-full xl:bottom-auto xl:top-full mt-1 mb-1 xl:mb-0 w-40 bg-[#1e2329] border border-slate-800 rounded-lg shadow-2xl py-1 z-50 flex flex-col">
+                    <button
+                      type="button"
+                      onClick={() => handleExportTradeHistory("csv")}
+                      className="px-3.5 py-2 text-left text-xs font-sans text-slate-200 hover:bg-slate-800 hover:text-white transition flex items-center gap-2 border-b border-slate-800/50"
+                    >
+                      <span className="text-emerald-400 font-extrabold text-[10px] bg-emerald-500/10 px-1 py-0.5 rounded leading-none">CSV</span>
+                      <span>Export to Excel/CSV</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleExportTradeHistory("json")}
+                      className="px-3.5 py-2 text-left text-xs font-sans text-slate-200 hover:bg-slate-800 hover:text-white transition flex items-center gap-2"
+                    >
+                      <span className="text-blue-400 font-extrabold text-[10px] bg-blue-550/10 bg-blue-500/10 px-1 py-0.5 rounded leading-none">JSON</span>
+                      <span>Raw Ledger JSON</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Rows limit selection & Pagination navigation elements */}
