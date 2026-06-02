@@ -108,6 +108,13 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
   const [editPairSearchQuery, setEditPairSearchQuery] = useState("");
   const [editBotLeverage, setEditBotLeverage] = useState<number>(1);
 
+  // Position-Level Stop Loss, Take Profit, and Trailing Profit Custom states
+  const [editingPositionTargetsId, setEditingPositionTargetsId] = useState<string | null>(null);
+  const [positionTargetSlPrice, setPositionTargetSlPrice] = useState<number>(0);
+  const [positionTargetTpPrice, setPositionTargetTpPrice] = useState<number>(0);
+  const [positionTargetTrailTpOffset, setPositionTargetTrailTpOffset] = useState<number>(0);
+  const [positionTargetTrailEnabled, setPositionTargetTrailEnabled] = useState<boolean>(false);
+
   // Copy indicators state & Webhook Payload Action toggles
   const [copiedStates, setCopiedStates] = useState<Record<string, boolean>>({});
   const [botPayloadActions, setBotPayloadActions] = useState<Record<string, "buy" | "sell" | "safety">>({});
@@ -1269,6 +1276,68 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
     }
   };
 
+  // Lock user Stop Loss (SL) and Take Profit (TP) and customizable Trailing profit targets on active trades
+  const handleSavePositionTargets = async (
+    pos: Position,
+    newTpPrice: number,
+    newSlPrice: number,
+    trailingEnabled: boolean,
+    newTrailingTpPercent: number
+  ) => {
+    try {
+      if (!currentUser?.uid) {
+        triggerNotification("Session missing. Please re-authenticate.", "error");
+        return;
+      }
+
+      if (isNaN(newTpPrice) || newTpPrice <= 0) {
+        triggerNotification("Invalid Take Profit target price.", "error");
+        return;
+      }
+
+      if (newSlPrice < 0 || isNaN(newSlPrice)) {
+        triggerNotification("Invalid Stop Loss target price.", "error");
+        return;
+      }
+
+      const updatedPos: Position = {
+        ...pos,
+        tpTriggerPrice: parseFloat(newTpPrice.toFixed(4)),
+        slTriggerPrice: parseFloat(newSlPrice.toFixed(4)),
+        trailingTpPercent: trailingEnabled ? parseFloat(newTrailingTpPercent.toFixed(3)) : undefined
+      };
+
+      // If trailing is disabled, reset trailing state machine
+      if (!trailingEnabled) {
+        updatedPos.trailingTpActive = false;
+      }
+
+      await dbService.savePosition(updatedPos);
+
+      // Instantly synchronize the local React state Positions array to prevent HMR/polling delay
+      setPositions(prev => prev.map(p => p.id === pos.id ? updatedPos : p));
+
+      // Construct scannable detailed ROI metrics
+      const entryPrice = pos.entryPrice;
+      const tpDiff = Math.abs(newTpPrice - entryPrice);
+      const tpPercent = parseFloat(((tpDiff / entryPrice) * 100).toFixed(2));
+      const slPercent = newSlPrice > 0 ? parseFloat((Math.abs(entryPrice - newSlPrice) / entryPrice * 100).toFixed(2)) : 0;
+
+      await dbService.addLog(
+        currentUser.uid,
+        `🎯 [TARGETS LOCKED]: Updated Stop Loss & Take Profit limits for active position ${pos.pair}. [TP Target Price: $${newTpPrice} (+${tpPercent}%), SL Target Price: ${newSlPrice > 0 ? `$${newSlPrice} (-${slPercent}%)` : "Disabled"}, Trailing Offset: ${trailingEnabled ? `${newTrailingTpPercent}%` : "Disabled"}]`,
+        "info",
+        pos.botId,
+        pos.botName
+      );
+
+      triggerNotification(`Targets successfully locked for ${pos.pair}!`, "success");
+      setEditingPositionTargetsId(null);
+    } catch (err: any) {
+      triggerNotification(`Failed to save targets: ${err.message}`, "error");
+    }
+  };
+
   // Trigger Edit Modal Loading
   const handleEditClick = (bot: TradingBot) => {
     setEditingBot(bot);
@@ -1969,49 +2038,292 @@ export default function MainTerminal({ user, onLogout }: MainTerminalProps) {
                     <tbody className="divide-y divide-slate-800 text-slate-100 font-mono">
                       {displayedPositions.map(p => {
                         const botRef = bots.find(b => b.id === p.botId);
+                        const isEditingThis = editingPositionTargetsId === p.id;
+                        const isLong = p.type === "long";
+                        const entryPrice = p.entryPrice;
+
+                        // Live calculated custom targets for visualization:
+                        const calculatedTpPercent = positionTargetTpPrice > 0 && entryPrice > 0
+                          ? (isLong
+                              ? ((positionTargetTpPrice - entryPrice) / entryPrice) * 100
+                              : ((entryPrice - positionTargetTpPrice) / entryPrice) * 100)
+                          : 0;
+
+                        const calculatedSlPercent = positionTargetSlPrice > 0 && entryPrice > 0
+                          ? (isLong
+                              ? ((entryPrice - positionTargetSlPrice) / entryPrice) * 100
+                              : ((positionTargetSlPrice - entryPrice) / entryPrice) * 100)
+                          : 0;
+
                         return (
-                          <tr key={p.id} className="hover:bg-slate-900/30 transition">
-                            <td className="py-3 font-semibold font-sans text-white">{p.botName}</td>
-                            <td>{p.pair}</td>
-                            <td>${p.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })}</td>
-                            <td>${p.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 1 })}</td>
-                            <td>
-                              {botRef?.type === "dca" ? (
-                                <span className="bg-[#0B0E11] border border-slate-800 px-2 py-0.5 rounded text-white font-mono">
-                                  {p.safetyOrdersCount} / {botRef.maxSafetyOrders} fills
-                                </span>
-                              ) : (
-                                <span className="text-slate-500">N/A (Signal Only)</span>
-                              )}
-                            </td>
-                            <td className={p.pnl >= 0 ? "text-emerald-400" : "text-red-400"}>
-                              ${p.pnl >= 0 ? "+" : ""}{p.pnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
-                            </td>
-                            <td className={`font-black ${p.pnlPercent >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                              {p.pnlPercent >= 0 ? "+" : ""}{p.pnlPercent.toFixed(2)}%
-                            </td>
-                            <td>
-                              <div className="flex flex-col gap-0.5 text-[9px] text-slate-400">
-                                <span className="text-emerald-400/90 font-bold">
-                                  {p.trailingTpActive ? "🔥 Trailing Margin" : `⭐ Target Profit TP @ $${p.tpTriggerPrice}`}
-                                </span>
-                                {botRef?.stopLossPercent && (
-                                  <span className="text-red-400/90 font-bold">
-                                    🛑 Stop Limit SL @ ${p.slTriggerPrice}
+                          <React.Fragment key={p.id}>
+                            <tr className={`hover:bg-slate-900/30 transition ${isEditingThis ? "bg-[#181A20]/80" : ""}`}>
+                              <td className="py-3 font-semibold font-sans text-white">
+                                <div className="flex items-center gap-1.5">
+                                  <span>{p.botName}</span>
+                                  <span className={`text-[8px] font-mono font-extrabold uppercase px-1 py-0.2 rounded border ${
+                                    isLong 
+                                      ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/25" 
+                                      : "bg-red-500/15 text-red-400 border-red-500/25"
+                                  }`}>
+                                    {p.type}
                                   </span>
+                                </div>
+                              </td>
+                              <td className="font-bold">{p.pair}</td>
+                              <td>${p.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}</td>
+                              <td className="text-white font-extrabold">${p.currentPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}</td>
+                              <td>
+                                {botRef?.type === "dca" ? (
+                                  <span className="bg-[#0B0E11] border border-slate-800 px-2 py-0.5 rounded text-white font-mono">
+                                    {p.safetyOrdersCount} / {botRef.maxSafetyOrders} fills
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500">N/A (Signal Only)</span>
                                 )}
-                              </div>
-                            </td>
-                            <td className="text-right py-3">
-                              <button
-                                onClick={() => handleManualClosePosition(p)}
-                                className="px-2.5 py-1 text-[10px] bg-red-950/70 hover:bg-red-900 border border-red-500/50 text-red-100 hover:text-white rounded cursor-pointer font-bold transition duration-150 inline-flex items-center gap-1.5"
-                                title="Liquidate / Settle position immediately"
-                              >
-                                <XCircle className="w-3.5 h-3.5" /> Force Settle
-                              </button>
-                            </td>
-                          </tr>
+                              </td>
+                              <td className={p.pnl >= 0 ? "text-emerald-400" : "text-red-400"}>
+                                ${p.pnl >= 0 ? "+" : ""}{p.pnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT
+                              </td>
+                              <td className={`font-black ${p.pnlPercent >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                                {p.pnlPercent >= 0 ? "+" : ""}{p.pnlPercent.toFixed(2)}%
+                              </td>
+                              <td>
+                                <div className="flex flex-col gap-0.5 text-[9px] text-slate-400">
+                                  {p.trailingTpPercent !== undefined && p.trailingTpPercent > 0 && (
+                                    <span className="text-[8px] uppercase tracking-wider font-extrabold text-[#0ecb81] bg-[#02c076]/10 px-1 py-0.2 rounded w-max mb-0.5">
+                                      Trail: {p.trailingTpPercent}%
+                                    </span>
+                                  )}
+                                  <span className={`${p.trailingTpActive ? "text-amber-400 font-extrabold animate-pulse" : "text-emerald-400/90 font-bold"}`}>
+                                    {p.trailingTpActive ? "🔥 Trailing Profit Active" : `⭐ TP Target @ $${p.tpTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}`}
+                                  </span>
+                                  {p.slTriggerPrice > 0 ? (
+                                    <span className="text-red-400/90 font-bold">
+                                      🛑 Stop Loss SL @ ${p.slTriggerPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-500 font-medium italic">No Stop Loss set</span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="text-right py-3">
+                                <div className="inline-flex gap-1.5">
+                                  <button
+                                    onClick={() => {
+                                      if (isEditingThis) {
+                                        setEditingPositionTargetsId(null);
+                                      } else {
+                                        setEditingPositionTargetsId(p.id);
+                                        setPositionTargetSlPrice(p.slTriggerPrice || parseFloat((p.entryPrice * (isLong ? 0.95 : 1.05)).toFixed(4)));
+                                        setPositionTargetTpPrice(p.tpTriggerPrice || parseFloat((p.entryPrice * (isLong ? 1.05 : 0.95)).toFixed(4)));
+                                        setPositionTargetTrailTpOffset(p.trailingTpPercent !== undefined ? p.trailingTpPercent : (botRef?.trailingTpPercent || 0.20));
+                                        setPositionTargetTrailEnabled(p.trailingTpPercent !== undefined ? p.trailingTpPercent > 0 : !!(botRef?.trailingTpPercent && botRef.trailingTpPercent > 0));
+                                      }
+                                    }}
+                                    className={`px-2.5 py-1 text-[10px] border rounded font-semibold cursor-pointer transition duration-150 inline-flex items-center gap-1 ${
+                                      isEditingThis
+                                        ? "bg-amber-500/20 border-amber-500/50 text-amber-300"
+                                        : "bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200"
+                                    }`}
+                                    title="Manually adjust and lock Stop-Loss, Take-Profit, and Trailing parameters"
+                                  >
+                                    <Sliders className="w-3 h-3" /> Targets
+                                  </button>
+                                  <button
+                                    onClick={() => handleManualClosePosition(p)}
+                                    className="px-2.5 py-1 text-[10px] bg-red-950/70 hover:bg-red-900 border border-red-500/50 text-red-100 hover:text-white rounded cursor-pointer font-bold transition duration-150 inline-flex items-center gap-1.5"
+                                    title="Liquidate / Settle position immediately"
+                                  >
+                                    <XCircle className="w-3.5 h-3.5" /> Force Settle
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+
+                            {/* Sub-Panel Inline custom Target SL/TP form drawer */}
+                            {isEditingThis && (
+                              <tr className="bg-[#14151a]/95 border-b border-l border-r border-[#0ecb81]/20">
+                                <td colSpan={9} className="p-4 bg-gradient-to-r from-[#14151a] to-[#1a1c24]">
+                                  <div className="space-y-4">
+                                    {/* Header info */}
+                                    <div className="flex justify-between items-center pb-2 border-b border-slate-800/80">
+                                      <div className="flex items-center gap-2">
+                                        <Sliders className="w-4 h-4 text-emerald-400" />
+                                        <span className="font-sans font-black text-slate-200 uppercase tracking-widest text-[11px]">
+                                          Configure Dynamic Trade Risk Control ({p.pair})
+                                        </span>
+                                      </div>
+                                      <span className="text-[10px] text-slate-450 text-slate-400 font-sans">
+                                        Weighted Entry Price: <span className="text-emerald-400 font-mono font-bold">${p.entryPrice.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 4 })}</span>
+                                      </span>
+                                    </div>
+
+                                    {/* Parameter control layout */}
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                      
+                                      {/* Take Profit (TP) Panel */}
+                                      <div className="p-3 bg-[#1e2329]/60 rounded-lg border border-slate-800 space-y-2">
+                                        <div className="flex justify-between items-center">
+                                          <label className="text-[10px] font-sans font-bold uppercase tracking-wider text-emerald-400">
+                                            🎯 Target Profit Price (TP)
+                                          </label>
+                                          <span className="text-[11px] font-mono font-bold text-emerald-400">
+                                            {calculatedTpPercent > 0 ? `+${calculatedTpPercent.toFixed(2)}% ROI` : ""}
+                                          </span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-xs text-slate-500 font-mono font-semibold select-none">$</span>
+                                          <input
+                                            type="number"
+                                            step="any"
+                                            className="w-full bg-[#0b0e11] border border-slate-800 hover:border-slate-700 focus:border-emerald-500 rounded font-mono py-1 px-2 text-xs text-white focus:outline-none transition"
+                                            value={positionTargetTpPrice || ""}
+                                            onChange={(e) => setPositionTargetTpPrice(parseFloat(e.target.value) || 0)}
+                                            placeholder="Enter absolute TP price target"
+                                          />
+                                        </div>
+                                        {/* Presets */}
+                                        <div className="flex flex-wrap gap-1 pt-1.5">
+                                          {[1.0, 2.0, 3.5, 5.0, 10.0].map(pct => (
+                                            <button
+                                              key={`p-tp-${pct}`}
+                                              type="button"
+                                              onClick={() => {
+                                                const targetVal = isLong 
+                                                  ? entryPrice * (1 + pct / 100)
+                                                  : entryPrice * (1 - pct / 100);
+                                                setPositionTargetTpPrice(parseFloat(targetVal.toFixed(4)));
+                                              }}
+                                              className="bg-slate-800/80 hover:bg-[#02c076]/20 hover:border-[#02c076]/40 text-[9px] font-mono px-1.5 py-0.5 rounded border border-slate-700/60 text-slate-300 hover:text-white transition cursor-pointer"
+                                            >
+                                              +{pct}%
+                                            </button>
+                                          ))}
+                                        </div>
+                                      </div>
+
+                                      {/* Stop Loss (SL) Panel */}
+                                      <div className="p-3 bg-[#1e2329]/60 rounded-lg border border-slate-800 space-y-2">
+                                        <div className="flex justify-between items-center">
+                                          <label className="text-[10px] font-sans font-bold uppercase tracking-wider text-red-400">
+                                            🛑 Stop Loss Protection (SL)
+                                          </label>
+                                          <span className="text-[11px] font-mono font-bold text-red-400 font-sans">
+                                            {calculatedSlPercent > 0 ? `-${calculatedSlPercent.toFixed(2)}% Loss` : "Disabled"}
+                                          </span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-xs text-slate-500 font-mono font-semibold select-none">$</span>
+                                          <input
+                                            type="number"
+                                            step="any"
+                                            className="w-full bg-[#0b0e11] border border-slate-800 hover:border-slate-700 focus:border-red-500 rounded font-mono py-1 px-2 text-xs text-white focus:outline-none transition"
+                                            value={positionTargetSlPrice || ""}
+                                            onChange={(e) => setPositionTargetSlPrice(parseFloat(e.target.value) || 0)}
+                                            placeholder="SL Disabled - No protect"
+                                          />
+                                        </div>
+                                        {/* Presets */}
+                                        <div className="flex flex-wrap gap-1 pt-1.5">
+                                          {[1.0, 2.0, 3.0, 5.0, 8.0].map(pct => (
+                                            <button
+                                              key={`p-sl-${pct}`}
+                                              type="button"
+                                              onClick={() => {
+                                                const targetVal = isLong 
+                                                  ? entryPrice * (1 - pct / 100)
+                                                  : entryPrice * (1 + pct / 100);
+                                                setPositionTargetSlPrice(parseFloat(targetVal.toFixed(4)));
+                                              }}
+                                              className="bg-slate-800/80 hover:bg-red-500/20 hover:border-red-500/40 text-[9px] font-mono px-1.5 py-0.5 rounded border border-slate-700/60 text-slate-300 hover:text-white transition cursor-pointer"
+                                            >
+                                              -{pct}%
+                                            </button>
+                                          ))}
+                                          <button
+                                            type="button"
+                                            onClick={() => setPositionTargetSlPrice(0)}
+                                            className="bg-red-950/40 hover:bg-red-900/60 text-[9px] font-sans px-2 py-0.5 rounded border border-red-900/40 text-red-400 hover:text-white transition cursor-pointer font-bold ml-auto"
+                                          >
+                                            No SL Trigger
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      {/* Trailing Profit Configuration Panel */}
+                                      <div className="p-3 bg-[#1e2329]/60 rounded-lg border border-slate-800 space-y-2">
+                                        <div className="flex justify-between items-center">
+                                          <label className="text-[10px] font-sans font-bold uppercase tracking-wider text-amber-400 flex items-center gap-1 cursor-pointer">
+                                            <input
+                                              type="checkbox"
+                                              checked={positionTargetTrailEnabled}
+                                              onChange={(e) => setPositionTargetTrailEnabled(e.target.checked)}
+                                              className="rounded text-amber-500 focus:ring-amber-500/20 bg-[#0b0e11] cursor-pointer w-3.5 h-3.5 border-slate-700"
+                                            />
+                                            Trailing Profit Mode
+                                          </label>
+                                          <span className="text-[11px] font-mono font-bold text-amber-400">
+                                            {positionTargetTrailEnabled ? `${positionTargetTrailTpOffset.toFixed(2)}% dev` : "Disabled"}
+                                          </span>
+                                        </div>
+
+                                        <div className="space-y-1.5 pt-0.5">
+                                          <input
+                                            type="range"
+                                            min="0.05"
+                                            max="3"
+                                            step="0.05"
+                                            value={positionTargetTrailTpOffset}
+                                            disabled={!positionTargetTrailEnabled}
+                                            onChange={(e) => setPositionTargetTrailTpOffset(parseFloat(e.target.value))}
+                                            className={`w-full h-1.5 bg-[#0b0e11] rounded accent-amber-500 cursor-pointer transition ${
+                                              !positionTargetTrailEnabled ? "opacity-30 cursor-not-allowed" : ""
+                                            }`}
+                                          />
+                                          <div className="flex justify-between text-[8px] text-slate-500 font-mono">
+                                            <span>Tight (0.05%)</span>
+                                            <span>Normal (1.0%)</span>
+                                            <span>Wide (3.0%)</span>
+                                          </div>
+                                        </div>
+                                        <p className="text-[9px] text-slate-500 font-sans leading-tight pt-1">
+                                          Trails your highest profit mark dynamically and exits when price retraces back by your custom offset factor.
+                                        </p>
+                                      </div>
+
+                                    </div>
+
+                                    {/* Action Buttons */}
+                                    <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-800/50">
+                                      <button
+                                        type="button"
+                                        onClick={() => setEditingPositionTargetsId(null)}
+                                        className="px-3 py-1.5 bg-[#181a20] hover:bg-slate-800 text-xs text-slate-450 text-slate-400 hover:text-white rounded border border-slate-850 hover:border-slate-700 font-bold transition cursor-pointer"
+                                      >
+                                        Cancel Adjust
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleSavePositionTargets(
+                                            p,
+                                            positionTargetTpPrice,
+                                            positionTargetSlPrice,
+                                            positionTargetTrailEnabled,
+                                            positionTargetTrailTpOffset
+                                          )
+                                        }
+                                        className="px-4 py-1.5 bg-[#02c076] hover:bg-[#03d885] text-xs text-white font-extrabold rounded shadow-md shadow-[#02c076]/10 transition hover:shadow-[#02c076]/20 cursor-pointer flex items-center gap-1"
+                                      >
+                                        <Check className="w-3.5 h-3.5 stroke-[3px]" /> Settle & Lock Targets
+                                      </button>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
                         );
                       })}
                     </tbody>

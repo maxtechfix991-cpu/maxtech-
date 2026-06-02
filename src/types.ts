@@ -60,6 +60,7 @@ export interface Position {
   pnl: number; // USDT profit size
   pnlPercent: number; // relative ROI
   leverage?: number; // position leverage if applicable
+  trailingTpPercent?: number; // custom trailing take-profit offset percent
   paperTrading?: boolean; // toggle for sandbox separation
   exchange?: string; // target market exchange
   createdAt: string;

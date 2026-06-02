@@ -107,7 +107,7 @@ export async function tickPositions(
     if (!bot) continue;
 
     // Trigger States Check
-    const trailingTpOffset = bot.trailingTpPercent || 0;
+    const trailingTpOffset = pos.trailingTpPercent !== undefined ? pos.trailingTpPercent : (bot.trailingTpPercent || 0);
     const hasTrailingProfit = trailingTpOffset > 0;
 
     // ----------------------------------------------------
@@ -180,7 +180,7 @@ export async function tickPositions(
     // ----------------------------------------------------
     // CHECK STOP LOSS (SL)
     // ----------------------------------------------------
-    if (!shouldCloseTrade && bot.stopLossPercent) {
+    if (!shouldCloseTrade && pos.slTriggerPrice && pos.slTriggerPrice > 0) {
       if (pos.type === "long") {
         if (currentPrice <= pos.slTriggerPrice) {
           shouldCloseTrade = true;
